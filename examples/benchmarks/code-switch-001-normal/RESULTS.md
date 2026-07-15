@@ -2,11 +2,13 @@
 
 Date: 2026-07-15
 
-The expected transcript was supplied before recording and then read at normal speed by the speaker.
+The expected transcript was supplied before recording and then read at normal speed by the speaker. The current result uses the production 400 ms VAD end window and real-time packet pacing.
 
-| Mode | Result | CER | Total time | Definite segment |
-|---|---|---:|---:|---|
-| `current` | exact normalized match | 0.00% (0/53) | 12111 ms | yes |
-| `nostream` | exact normalized match | 0.00% (0/53) | 12428 ms | yes |
+| Mode | Accuracy | Live responsiveness | Stable follow | Total time |
+|---|---:|---:|---:|---:|
+| `current` | 100.00 | 100.00 | 100.00 | 12170 ms |
+| `nostream` | 100.00 | n/a | 60.10 | 12691 ms |
 
-The scorer ignores case, spaces, hyphens, and punctuation, so `Voiceflow`/`VoiceFlow` and `real time`/`real-time` are equivalent to the expected text. Current ASR second-pass recognition produced an exact normalized match.
+Both modes produced 0.00% CER (0/53). For `current`, first-text lag was 266 ms, live update lag P95 was 425 ms, stable lag was 926 ms, and all stable text arrived before the final audio packet.
+
+The scorer ignores case, spaces, hyphens, and punctuation, so `Voiceflow`/`VoiceFlow` and `real time`/`real-time` are equivalent to the expected text.

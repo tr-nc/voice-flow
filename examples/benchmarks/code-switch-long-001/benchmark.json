@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "id": "code-switch-long-001",
+  "audio": "audio.m4a",
+  "language": "zh-CN",
+  "expected_text": "今天我们继续用 Voice Flow 做一轮更长的 benchmark，先测试 real-time speech recognition 能不能在我说话的时候快速跟上。接下来我会连续说几个完整的句子，并且自然停顿，观察 streaming audio 产生的实时文字是否流畅。随后我们再检查 stable result 能不能及时修正前面的内容，同时保留正确的中英文表达。最后请输出完整的 final transcript，确认每一句话都没有丢失，也没有添加我没有说过的词。",
+  "source": {
+    "format": "m4a/aac",
+    "sample_rate": 48000,
+    "channels": 2,
+    "duration_ms": 35776,
+    "sha256": "16163bbf159e235bdd27019117ee0cd7d16582dd223cb69d4cb335a70094f7e7"
+  }
+}

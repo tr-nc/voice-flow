@@ -31,7 +31,7 @@ On first use, macOS asks for microphone access. Global side-specific shortcut de
 
 Enter the VolcEngine **Secret Key** once. It is stored only in the local settings file. The Secret Key, selected microphone, shortcut, interaction mode, and insertion preference are saved automatically whenever they change.
 
-Voice Flow uses the optimized bidirectional ASR endpoint `wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async`, enables ASR second-pass recognition for accurate final text, and uses resource ID `volc.seedasr.sauc.duration`.
+Voice Flow uses the optimized bidirectional ASR endpoint `wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async`, enables ASR second-pass recognition with a benchmarked 400 ms VAD end window for accurate, responsive stable text, and uses resource ID `volc.seedasr.sauc.duration`.
 
 ## Architecture
 
@@ -52,14 +52,14 @@ Licensed under [MIT](LICENSE). See [CONTRIBUTING.md](CONTRIBUTING.md) for projec
 
 ## ASR benchmarks
 
-Human-reviewed audio fixtures and their expected transcripts live in [`examples/benchmarks`](examples/benchmarks). The benchmark accepts M4A, MP3, WAV, and other formats decoded by `ffmpeg`, then compares current second-pass and non-streaming recognition using identical 200 ms PCM packets.
+Human-reviewed audio fixtures and their expected transcripts live in [`examples/benchmarks`](examples/benchmarks). The benchmark accepts M4A, MP3, WAV, and other formats decoded by `ffmpeg`, then compares current second-pass and non-streaming recognition using identical real-time-paced 200 ms PCM packets. It independently scores final accuracy, live first-pass responsiveness, and stable second-pass follow latency while retaining the raw measurements.
 
 ```bash
 cargo run --manifest-path src-tauri/Cargo.toml --example asr_benchmark -- \
-  examples/benchmarks/code-switch-001-normal
+  examples/benchmarks/code-switch-long-001
 ```
 
-See the benchmark README for individual modes and hotword experiments. Credentials and decoded audio are never written to application logs.
+See the benchmark README for scoring formulas, individual modes, VAD tuning, and hotword experiments. Credentials and decoded audio are never written to application logs.
 
 ## Validate
 

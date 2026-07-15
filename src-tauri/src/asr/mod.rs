@@ -14,8 +14,9 @@ use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::{debug, info, warn};
 use uuid::Uuid;
 
+use crate::asr_options::{CURRENT_ENDPOINT, RESOURCE_ID, VAD_END_WINDOW_MS};
 use crate::audio::{AudioCapture, AudioEvent, TARGET_SAMPLE_RATE};
-use crate::config::{AppConfig, DEFAULT_ENDPOINT, DEFAULT_RESOURCE_ID};
+use crate::config::AppConfig;
 
 const AUDIO_PACKET_SAMPLES: usize = 3_200;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -45,21 +46,18 @@ pub async fn recognize(
 ) -> Result<String> {
     config.validate_for_dictation()?;
     info!(
-        endpoint = DEFAULT_ENDPOINT,
-        resource_id = DEFAULT_RESOURCE_ID,
+        endpoint = CURRENT_ENDPOINT,
+        resource_id = RESOURCE_ID,
         "preparing streaming ASR session"
     );
 
     let mut stop_receiver = stop_receiver;
     let request_id = Uuid::new_v4().to_string();
-    let mut request = DEFAULT_ENDPOINT
+    let mut request = CURRENT_ENDPOINT
         .into_client_request()
         .context("failed to create the VolcEngine WebSocket request")?;
     let headers = request.headers_mut();
-    headers.insert(
-        "x-api-resource-id",
-        HeaderValue::from_static(DEFAULT_RESOURCE_ID),
-    );
+    headers.insert("x-api-resource-id", HeaderValue::from_static(RESOURCE_ID));
     headers.insert(
         "x-api-connect-id",
         HeaderValue::from_str(&request_id).expect("UUID is a valid header"),
@@ -196,6 +194,7 @@ fn request_payload() -> serde_json::Value {
         "request": {
             "model_name": "bigmodel",
             "enable_nonstream": true,
+            "end_window_size": VAD_END_WINDOW_MS,
             "enable_itn": true,
             "enable_punc": true,
             "enable_ddc": false,
@@ -280,6 +279,10 @@ mod tests {
         assert_eq!(
             payload.pointer("/request/enable_nonstream"),
             Some(&serde_json::Value::Bool(true))
+        );
+        assert_eq!(
+            payload.pointer("/request/end_window_size"),
+            Some(&serde_json::Value::from(VAD_END_WINDOW_MS))
         );
     }
 

@@ -2,11 +2,13 @@
 
 Date: 2026-07-15
 
-The expected transcript was supplied before recording and then read quickly by the speaker.
+The expected transcript was supplied before recording and then read quickly by the speaker. The current result uses the production 400 ms VAD end window and real-time packet pacing.
 
-| Mode | Result | CER | Total time | Definite segment |
-|---|---|---:|---:|---|
-| `current` | exact normalized match | 0.00% (0/53) | 6819 ms | yes |
-| `nostream` | exact normalized match | 0.00% (0/53) | 6849 ms | yes |
+| Mode | Accuracy | Live responsiveness | Stable follow | Total time |
+|---|---:|---:|---:|---:|
+| `current` | 100.00 | 100.00 | 68.92 | 7298 ms |
+| `nostream` | 100.00 | n/a | 70.00 | 7130 ms |
 
-Current ASR second-pass recognition and the non-streaming model both recovered the complete sentence. To check provider variance, `current` was run three times and produced 0.00% CER every time.
+Both modes produced 0.00% CER (0/53). For `current`, first-text lag was 154 ms and live update lag P95 was 190 ms. The recording ended before its only stable segment arrived, so pre-final stable coverage was 0%; the final-tail latency was 635 ms.
+
+Current ASR second-pass recognition remained exact despite the fast delivery. The lower stable-follow score reflects the lack of trailing time after speech rather than a text-accuracy failure.

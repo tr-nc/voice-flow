@@ -1,6 +1,9 @@
+#[path = "../src/asr_options.rs"]
+mod asr_options;
 #[path = "../src/asr/protocol.rs"]
 mod protocol;
 
+use std::collections::BTreeMap;
 use std::ffi::OsStr;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -18,10 +21,8 @@ use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::protocol::Message;
 use uuid::Uuid;
 
-const RESOURCE_ID: &str = "volc.seedasr.sauc.duration";
 const SAMPLE_RATE: usize = 16_000;
 const PACKET_SAMPLES: usize = 3_200;
-const PACKET_INTERVAL: Duration = Duration::from_millis(200);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 
@@ -62,7 +63,7 @@ impl RecognitionMode {
 
     fn endpoint(self) -> &'static str {
         match self {
-            Self::Current => "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async",
+            Self::Current => asr_options::CURRENT_ENDPOINT,
             Self::Nostream => "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_nostream",
         }
     }
@@ -75,16 +76,62 @@ impl RecognitionMode {
 struct RecognitionResult {
     text: String,
     connect_ms: u128,
+    stream_ms: u128,
     total_ms: u128,
     packets: usize,
-    saw_definite_segment: bool,
+    first_text_ms: Option<u128>,
+    first_text_lag_ms: Option<u128>,
+    live_update_times_ms: Vec<u128>,
+    live_lags_ms: Vec<u128>,
+    stable_segments: Vec<StableSegment>,
+    vad_end_window_ms: Option<u64>,
     log_id: String,
+}
+
+struct ExchangeResult {
+    text: String,
+    stream_ms: u128,
+    first_text_ms: Option<u128>,
+    first_text_lag_ms: Option<u128>,
+    live_update_times_ms: Vec<u128>,
+    live_lags_ms: Vec<u128>,
+    stable_segments: Vec<StableSegment>,
+}
+
+#[derive(Clone)]
+struct UtteranceObservation {
+    start_ms: u64,
+    end_ms: u64,
+    text: String,
+    definite: bool,
+}
+
+struct StableSegment {
+    start_ms: u64,
+    end_ms: u64,
+    text: String,
+    arrived_ms: u128,
+    before_final_audio: bool,
+}
+
+struct ErrorBreakdown {
+    substitutions: usize,
+    insertions: usize,
+    deletions: usize,
+}
+
+impl ErrorBreakdown {
+    fn distance(&self) -> usize {
+        self.substitutions + self.insertions + self.deletions
+    }
 }
 
 struct Cli {
     input: PathBuf,
     mode: Option<RecognitionMode>,
     hotwords: Vec<String>,
+    end_window_ms: Option<u64>,
+    force_to_speech_ms: Option<u64>,
 }
 
 #[tokio::main]
@@ -105,29 +152,201 @@ async fn main() -> Result<()> {
     );
     println!("expected: {}", case.expected_text);
     println!("hotwords: {}", cli.hotwords.len());
+    println!(
+        "current_end_window_ms: {}",
+        cli.end_window_ms.map_or_else(
+            || format!("production-default({})", asr_options::VAD_END_WINDOW_MS),
+            |value| value.to_string(),
+        )
+    );
+    println!(
+        "force_to_speech_ms: {}",
+        cli.force_to_speech_ms
+            .map_or_else(|| "provider-default".to_owned(), |value| value.to_string())
+    );
 
     let modes = cli
         .mode
         .map_or_else(|| RecognitionMode::all().to_vec(), |mode| vec![mode]);
     for mode in modes {
-        let result = recognize_pcm(&pcm, &secret_key, mode, &case.language, &cli.hotwords).await?;
-        let (distance, reference_len, cer) =
-            character_error_rate(&case.expected_text, &result.text);
-        println!();
-        println!("mode: {}", mode.name());
-        println!("recognized: {}", result.text);
-        println!("cer: {cer:.2}% ({distance}/{reference_len})");
-        println!(
-            "timing: connect={}ms total={}ms packets={}",
-            result.connect_ms, result.total_ms, result.packets
-        );
-        println!("definite_segment: {}", result.saw_definite_segment);
-        if !result.log_id.is_empty() {
-            println!("provider_log_id: {}", result.log_id);
-        }
+        let result = recognize_pcm(
+            &pcm,
+            &secret_key,
+            mode,
+            &case.language,
+            &cli.hotwords,
+            cli.end_window_ms,
+            cli.force_to_speech_ms,
+        )
+        .await?;
+        print_result(mode, &case.expected_text, duration_ms, &result);
     }
 
     Ok(())
+}
+
+fn print_result(
+    mode: RecognitionMode,
+    expected_text: &str,
+    audio_duration_ms: usize,
+    result: &RecognitionResult,
+) {
+    let (errors, reference_len, cer) = character_error_rate(expected_text, &result.text);
+    let accuracy_score = (100.0 - cer).clamp(0.0, 100.0);
+    let live_gap_ms = result
+        .live_update_times_ms
+        .windows(2)
+        .map(|times| times[1].saturating_sub(times[0]))
+        .collect::<Vec<_>>();
+    let live_lag_p50 = percentile(&result.live_lags_ms, 50);
+    let live_lag_p95 = percentile(&result.live_lags_ms, 95);
+    let live_score = match (result.first_text_lag_ms, live_lag_p95) {
+        (Some(first), Some(p95)) => {
+            Some((latency_score(first, 500, 2_500) + latency_score(p95, 500, 2_500)) / 2.0)
+        }
+        (Some(first), None) => Some(latency_score(first, 500, 2_500)),
+        _ => None,
+    };
+
+    let stable_lags_ms = result
+        .stable_segments
+        .iter()
+        .map(|segment| {
+            segment
+                .arrived_ms
+                .saturating_sub(u128::from(stable_speech_end_ms(
+                    segment,
+                    result.vad_end_window_ms,
+                )))
+        })
+        .collect::<Vec<_>>();
+    let stable_lag_p50 = percentile(&stable_lags_ms, 50);
+    let stable_lag_p95 = percentile(&stable_lags_ms, 95);
+    let before_final_count = result
+        .stable_segments
+        .iter()
+        .filter(|segment| segment.before_final_audio)
+        .count();
+    let stable_character_count = result
+        .stable_segments
+        .iter()
+        .map(|segment| normalize_for_cer(&segment.text).len())
+        .sum::<usize>();
+    let before_final_character_count = result
+        .stable_segments
+        .iter()
+        .filter(|segment| segment.before_final_audio)
+        .map(|segment| normalize_for_cer(&segment.text).len())
+        .sum::<usize>();
+    let stable_coverage = if stable_character_count == 0 {
+        0.0
+    } else {
+        (before_final_character_count as f64 / stable_character_count as f64 * 100.0)
+            .clamp(0.0, 100.0)
+    };
+    let final_tail_ms = result.stream_ms.saturating_sub(audio_duration_ms as u128);
+    let stable_score = stable_lag_p95.map(|p95| {
+        latency_score(p95, 1_200, 4_000) * 0.5
+            + stable_coverage * 0.3
+            + latency_score(final_tail_ms, 500, 3_000) * 0.2
+    });
+
+    println!();
+    println!("mode: {}", mode.name());
+    println!("recognized: {}", result.text);
+    println!("accuracy_score: {accuracy_score:.2}/100");
+    println!(
+        "accuracy: cer={cer:.2}% distance={}/{} substitutions={} insertions={} deletions={}",
+        errors.distance(),
+        reference_len,
+        errors.substitutions,
+        errors.insertions,
+        errors.deletions
+    );
+    if matches!(mode, RecognitionMode::Current) {
+        match live_score {
+            Some(score) => println!("live_responsiveness_score: {score:.2}/100"),
+            None => println!("live_responsiveness_score: n/a"),
+        }
+        println!(
+            "live: first_text={} first_lag={} updates={} lag_p50={} lag_p95={} gap_p50={} gap_p95={}",
+            display_ms(result.first_text_ms),
+            display_ms(result.first_text_lag_ms),
+            result.live_update_times_ms.len(),
+            display_ms(live_lag_p50),
+            display_ms(live_lag_p95),
+            display_ms(percentile(&live_gap_ms, 50)),
+            display_ms(percentile(&live_gap_ms, 95))
+        );
+    } else {
+        println!("live_responsiveness_score: n/a (mode does not provide first-pass text)");
+    }
+    match stable_score {
+        Some(score) => println!("stable_follow_score: {score:.2}/100"),
+        None => println!("stable_follow_score: n/a"),
+    }
+    println!(
+        "stable: segments={} before_final={} coverage={stable_coverage:.2}% lag_p50={} lag_p95={} final_tail={final_tail_ms}ms",
+        result.stable_segments.len(),
+        before_final_count,
+        display_ms(stable_lag_p50),
+        display_ms(stable_lag_p95)
+    );
+    println!(
+        "timing: connect={}ms stream={}ms total={}ms packets={}",
+        result.connect_ms, result.stream_ms, result.total_ms, result.packets
+    );
+    for (index, segment) in result.stable_segments.iter().enumerate() {
+        println!(
+            "stable_segment_{}: source={}..{}ms provider_end={}ms arrival={}ms lag={}ms before_final={} chars={}",
+            index + 1,
+            segment.start_ms,
+            stable_speech_end_ms(segment, result.vad_end_window_ms),
+            segment.end_ms,
+            segment.arrived_ms,
+            segment
+                .arrived_ms
+                .saturating_sub(u128::from(stable_speech_end_ms(
+                    segment,
+                    result.vad_end_window_ms
+                ))),
+            segment.before_final_audio,
+            normalize_for_cer(&segment.text).len()
+        );
+    }
+    if !result.log_id.is_empty() {
+        println!("provider_log_id: {}", result.log_id);
+    }
+}
+
+fn stable_speech_end_ms(segment: &StableSegment, vad_end_window_ms: Option<u64>) -> u64 {
+    segment
+        .end_ms
+        .saturating_sub(vad_end_window_ms.unwrap_or(0))
+}
+
+fn display_ms(value: Option<u128>) -> String {
+    value.map_or_else(|| "n/a".to_owned(), |value| format!("{value}ms"))
+}
+
+fn percentile(values: &[u128], percentile: usize) -> Option<u128> {
+    if values.is_empty() {
+        return None;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable();
+    let rank = (percentile * sorted.len()).div_ceil(100).saturating_sub(1);
+    sorted.get(rank).copied()
+}
+
+fn latency_score(value_ms: u128, excellent_ms: u128, failing_ms: u128) -> f64 {
+    if value_ms <= excellent_ms {
+        return 100.0;
+    }
+    if value_ms >= failing_ms {
+        return 0.0;
+    }
+    (failing_ms - value_ms) as f64 / (failing_ms - excellent_ms) as f64 * 100.0
 }
 
 fn parse_args() -> Result<Cli> {
@@ -135,6 +354,8 @@ fn parse_args() -> Result<Cli> {
     let mut input = None;
     let mut mode = None;
     let mut hotwords = Vec::new();
+    let mut end_window_ms = None;
+    let mut force_to_speech_ms = None;
 
     while let Some(argument) = args.next() {
         if argument == OsStr::new("--help") || argument == OsStr::new("-h") {
@@ -161,23 +382,57 @@ fn parse_args() -> Result<Cli> {
             hotwords.push(value.to_owned());
             continue;
         }
+        if argument == OsStr::new("--end-window-ms") {
+            let value = args.next().context("--end-window-ms requires a value")?;
+            let value = value
+                .to_str()
+                .context("--end-window-ms must be valid UTF-8")?
+                .parse::<u64>()
+                .context("--end-window-ms must be an integer")?;
+            if value < 200 {
+                bail!("--end-window-ms must be at least 200");
+            }
+            end_window_ms = Some(value);
+            continue;
+        }
+        if argument == OsStr::new("--force-to-speech-ms") {
+            let value = args
+                .next()
+                .context("--force-to-speech-ms requires a value")?;
+            let value = value
+                .to_str()
+                .context("--force-to-speech-ms must be valid UTF-8")?
+                .parse::<u64>()
+                .context("--force-to-speech-ms must be an integer")?;
+            if value == 0 {
+                bail!("--force-to-speech-ms must be at least 1");
+            }
+            force_to_speech_ms = Some(value);
+            continue;
+        }
         if input.replace(PathBuf::from(argument)).is_some() {
             bail!("only one benchmark directory or audio file may be provided");
         }
     }
 
     let input = input.context("missing benchmark directory or audio file; use --help for usage")?;
+    if force_to_speech_ms.is_some() && end_window_ms.is_none() {
+        bail!("--force-to-speech-ms requires --end-window-ms");
+    }
     Ok(Cli {
         input,
         mode,
         hotwords,
+        end_window_ms,
+        force_to_speech_ms,
     })
 }
 
 fn print_help() {
     println!(
         "Voice Flow ASR benchmark\n\n\
-Usage:\n  cargo run --manifest-path src-tauri/Cargo.toml --example asr_benchmark -- \\\n    examples/benchmarks/code-switch-001-normal [--mode all|current|nostream] \\\n    [--hotword WORD]...\n\n\
+Usage:\n  cargo run --manifest-path src-tauri/Cargo.toml --example asr_benchmark -- \\\n    examples/benchmarks/code-switch-001-normal [--mode all|current|nostream] \\\n    [--hotword WORD]... [--end-window-ms MILLISECONDS] \\
+    [--force-to-speech-ms MILLISECONDS]\n\n\
 The input may be a benchmark directory containing benchmark.json, or a directly\n\
 decodable audio file accompanied by a sibling benchmark.json. ffmpeg must be installed.\n\
 The Secret Key is read from VOICE_FLOW_SECRET_KEY or the local Voice Flow settings file."
@@ -311,6 +566,8 @@ async fn recognize_pcm(
     mode: RecognitionMode,
     language: &str,
     hotwords: &[String],
+    end_window_ms: Option<u64>,
+    force_to_speech_ms: Option<u64>,
 ) -> Result<RecognitionResult> {
     let started = Instant::now();
     let request_id = Uuid::new_v4().to_string();
@@ -319,7 +576,10 @@ async fn recognize_pcm(
         .into_client_request()
         .context("failed to create the ASR WebSocket request")?;
     let headers = request.headers_mut();
-    headers.insert("x-api-resource-id", HeaderValue::from_static(RESOURCE_ID));
+    headers.insert(
+        "x-api-resource-id",
+        HeaderValue::from_static(asr_options::RESOURCE_ID),
+    );
     headers.insert(
         "x-api-connect-id",
         HeaderValue::from_str(&request_id).expect("UUID is a valid header"),
@@ -348,6 +608,8 @@ async fn recognize_pcm(
         .to_owned();
     let (mut writer, mut reader) = websocket.split();
 
+    let end_window_ms = matches!(mode, RecognitionMode::Current)
+        .then_some(end_window_ms.unwrap_or(asr_options::VAD_END_WINDOW_MS));
     let mut request_settings = json!({
         "model_name": "bigmodel",
         "enable_itn": true,
@@ -358,6 +620,12 @@ async fn recognize_pcm(
     });
     if mode.enable_nonstream() {
         request_settings["enable_nonstream"] = json!(true);
+        if let Some(value) = end_window_ms {
+            request_settings["end_window_size"] = json!(value);
+        }
+        if let Some(value) = force_to_speech_ms {
+            request_settings["force_to_speech_time"] = json!(value);
+        }
     }
     if !hotwords.is_empty() {
         let context = json!({
@@ -392,11 +660,18 @@ async fn recognize_pcm(
     let packet_count = pcm.len().div_ceil(PACKET_SAMPLES).max(1);
     let response_timeout = Duration::from_secs_f64((pcm.len() as f64 / SAMPLE_RATE as f64) + 20.0)
         .max(Duration::from_secs(30));
+    let stream_started = Instant::now();
+    let pacing_started = tokio::time::Instant::now();
     let exchange = async {
         let mut packet_index = 0;
-        let mut next_send = tokio::time::Instant::now();
+        let mut next_send = pacing_started + sample_duration(PACKET_SAMPLES.min(pcm.len()));
+        let mut final_audio_sent = false;
         let mut final_text = String::new();
-        let mut saw_definite_segment = false;
+        let mut first_text_ms = None;
+        let mut first_text_lag_ms = None;
+        let mut live_update_times_ms = Vec::new();
+        let mut live_lags_ms = Vec::new();
+        let mut stable_segments = BTreeMap::<(u64, u64), StableSegment>::new();
 
         loop {
             tokio::select! {
@@ -407,35 +682,72 @@ async fn recognize_pcm(
                     let is_last = packet_index + 1 == packet_count;
                     send_audio(&mut writer, 2 + packet_index as i32, samples, is_last).await?;
                     packet_index += 1;
-                    next_send += PACKET_INTERVAL;
+                    final_audio_sent = is_last;
+                    if packet_index < packet_count {
+                        let next_end = ((packet_index + 1) * PACKET_SAMPLES).min(pcm.len());
+                        next_send = pacing_started + sample_duration(next_end);
+                    }
                 }
                 message = reader.next() => {
                     match message {
                         Some(Ok(Message::Binary(data))) => {
+                            let arrived_ms = stream_started.elapsed().as_millis();
                             let frame = protocol::parse_server_frame(data.as_ref())?;
                             if let Some(payload) = frame.payload.as_ref() {
-                                if let Some(text) = protocol::extract_text(Some(payload)) {
+                                let utterances = extract_utterances(payload);
+                                if let Some(text) = protocol::extract_text(Some(payload))
+                                    && text != final_text
+                                {
+                                    first_text_ms.get_or_insert(arrived_ms);
+                                    let source_end_ms = utterances
+                                        .iter()
+                                        .map(|utterance| utterance.end_ms)
+                                        .max()
+                                        .map(u128::from);
+                                    if first_text_lag_ms.is_none() {
+                                        first_text_lag_ms = source_end_ms
+                                            .map(|end_ms| arrived_ms.saturating_sub(end_ms));
+                                    }
+                                    let has_provisional = utterances.is_empty()
+                                        || utterances.iter().any(|utterance| !utterance.definite);
+                                    if has_provisional {
+                                        live_update_times_ms.push(arrived_ms);
+                                        if let Some(end_ms) = source_end_ms {
+                                            live_lags_ms.push(arrived_ms.saturating_sub(end_ms));
+                                        }
+                                    }
                                     final_text = text;
                                 }
-                                saw_definite_segment |= payload
-                                    .pointer("/result/utterances")
-                                    .and_then(serde_json::Value::as_array)
-                                    .is_some_and(|utterances| {
-                                        utterances.iter().any(|utterance| {
-                                            utterance.get("definite")
-                                                .and_then(serde_json::Value::as_bool)
-                                                .unwrap_or(false)
-                                        })
-                                    });
+
+                                for utterance in utterances
+                                    .into_iter()
+                                    .filter(|utterance| utterance.definite && !utterance.text.is_empty())
+                                {
+                                    stable_segments
+                                        .entry((utterance.start_ms, utterance.end_ms))
+                                        .and_modify(|segment| segment.text.clone_from(&utterance.text))
+                                        .or_insert(StableSegment {
+                                            start_ms: utterance.start_ms,
+                                            end_ms: utterance.end_ms,
+                                            text: utterance.text,
+                                            arrived_ms,
+                                            before_final_audio: !final_audio_sent,
+                                        });
+                                }
                             }
                             if frame.is_last {
                                 if packet_index < packet_count {
                                     bail!("ASR ended before all benchmark audio was sent");
                                 }
-                                return Ok::<(String, bool), anyhow::Error>((
-                                    final_text,
-                                    saw_definite_segment,
-                                ));
+                                return Ok::<ExchangeResult, anyhow::Error>(ExchangeResult {
+                                    text: final_text,
+                                    stream_ms: stream_started.elapsed().as_millis(),
+                                    first_text_ms,
+                                    first_text_lag_ms,
+                                    live_update_times_ms,
+                                    live_lags_ms,
+                                    stable_segments: stable_segments.into_values().collect(),
+                                });
                             }
                         }
                         Some(Ok(Message::Ping(payload))) => {
@@ -452,18 +764,56 @@ async fn recognize_pcm(
             }
         }
     };
-    let (text, saw_definite_segment) = timeout(response_timeout, exchange)
+    let exchange = timeout(response_timeout, exchange)
         .await
         .context("timed out waiting for the benchmark ASR result")??;
 
     Ok(RecognitionResult {
-        text,
+        text: exchange.text,
         connect_ms,
+        stream_ms: exchange.stream_ms,
         total_ms: started.elapsed().as_millis(),
         packets: packet_count,
-        saw_definite_segment,
+        first_text_ms: exchange.first_text_ms,
+        first_text_lag_ms: exchange.first_text_lag_ms,
+        live_update_times_ms: exchange.live_update_times_ms,
+        live_lags_ms: exchange.live_lags_ms,
+        stable_segments: exchange.stable_segments,
+        vad_end_window_ms: end_window_ms,
         log_id,
     })
+}
+
+fn sample_duration(samples: usize) -> Duration {
+    Duration::from_secs_f64(samples as f64 / SAMPLE_RATE as f64)
+}
+
+fn extract_utterances(payload: &serde_json::Value) -> Vec<UtteranceObservation> {
+    payload
+        .pointer("/result/utterances")
+        .and_then(serde_json::Value::as_array)
+        .into_iter()
+        .flatten()
+        .map(|utterance| UtteranceObservation {
+            start_ms: utterance
+                .get("start_time")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0),
+            end_ms: utterance
+                .get("end_time")
+                .and_then(serde_json::Value::as_u64)
+                .unwrap_or(0),
+            text: utterance
+                .get("text")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            definite: utterance
+                .get("definite")
+                .and_then(serde_json::Value::as_bool)
+                .unwrap_or(false),
+        })
+        .collect()
 }
 
 async fn send_audio<S>(writer: &mut S, sequence: i32, samples: &[i16], is_last: bool) -> Result<()>
@@ -493,17 +843,17 @@ where
         .context("failed to write to the ASR WebSocket")
 }
 
-fn character_error_rate(expected: &str, actual: &str) -> (usize, usize, f64) {
+fn character_error_rate(expected: &str, actual: &str) -> (ErrorBreakdown, usize, f64) {
     let expected = normalize_for_cer(expected);
     let actual = normalize_for_cer(actual);
-    let distance = edit_distance(&expected, &actual);
+    let errors = error_breakdown(&expected, &actual);
     let reference_len = expected.len();
     let percentage = if reference_len == 0 {
         0.0
     } else {
-        distance as f64 / reference_len as f64 * 100.0
+        errors.distance() as f64 / reference_len as f64 * 100.0
     };
-    (distance, reference_len, percentage)
+    (errors, reference_len, percentage)
 }
 
 fn normalize_for_cer(value: &str) -> Vec<char> {
@@ -514,22 +864,59 @@ fn normalize_for_cer(value: &str) -> Vec<char> {
         .collect()
 }
 
-fn edit_distance(left: &[char], right: &[char]) -> usize {
-    let mut previous = (0..=right.len()).collect::<Vec<_>>();
-    let mut current = vec![0; right.len() + 1];
-
-    for (left_index, left_character) in left.iter().enumerate() {
-        current[0] = left_index + 1;
-        for (right_index, right_character) in right.iter().enumerate() {
-            let substitution =
-                previous[right_index] + usize::from(left_character != right_character);
-            let insertion = current[right_index] + 1;
-            let deletion = previous[right_index + 1] + 1;
-            current[right_index + 1] = substitution.min(insertion).min(deletion);
-        }
-        std::mem::swap(&mut previous, &mut current);
+fn error_breakdown(expected: &[char], actual: &[char]) -> ErrorBreakdown {
+    let mut distances = vec![vec![0; actual.len() + 1]; expected.len() + 1];
+    for (index, row) in distances.iter_mut().enumerate() {
+        row[0] = index;
     }
-    previous[right.len()]
+    for (index, value) in distances[0].iter_mut().enumerate() {
+        *value = index;
+    }
+
+    for expected_index in 1..=expected.len() {
+        for actual_index in 1..=actual.len() {
+            let substitution = distances[expected_index - 1][actual_index - 1]
+                + usize::from(expected[expected_index - 1] != actual[actual_index - 1]);
+            let deletion = distances[expected_index - 1][actual_index] + 1;
+            let insertion = distances[expected_index][actual_index - 1] + 1;
+            distances[expected_index][actual_index] = substitution.min(deletion).min(insertion);
+        }
+    }
+
+    let mut expected_index = expected.len();
+    let mut actual_index = actual.len();
+    let mut errors = ErrorBreakdown {
+        substitutions: 0,
+        insertions: 0,
+        deletions: 0,
+    };
+    while expected_index > 0 || actual_index > 0 {
+        if expected_index > 0
+            && actual_index > 0
+            && expected[expected_index - 1] == actual[actual_index - 1]
+        {
+            expected_index -= 1;
+            actual_index -= 1;
+        } else if expected_index > 0
+            && actual_index > 0
+            && distances[expected_index][actual_index]
+                == distances[expected_index - 1][actual_index - 1] + 1
+        {
+            errors.substitutions += 1;
+            expected_index -= 1;
+            actual_index -= 1;
+        } else if expected_index > 0
+            && distances[expected_index][actual_index]
+                == distances[expected_index - 1][actual_index] + 1
+        {
+            errors.deletions += 1;
+            expected_index -= 1;
+        } else {
+            errors.insertions += 1;
+            actual_index -= 1;
+        }
+    }
+    errors
 }
 
 #[cfg(test)]
@@ -538,15 +925,33 @@ mod tests {
 
     #[test]
     fn cer_ignores_case_spacing_and_punctuation() {
-        let (distance, reference_len, percentage) =
+        let (errors, reference_len, percentage) =
             character_error_rate("Voice Flow，测试。", "voiceflow测试");
-        assert_eq!(distance, 0);
+        assert_eq!(errors.distance(), 0);
         assert_eq!(reference_len, 11);
         assert_eq!(percentage, 0.0);
     }
 
     #[test]
     fn edit_distance_counts_a_substitution() {
-        assert_eq!(edit_distance(&['声', '音'], &['生', '音']), 1);
+        let errors = error_breakdown(&['声', '音'], &['生', '音']);
+        assert_eq!(errors.distance(), 1);
+        assert_eq!(errors.substitutions, 1);
+        assert_eq!(errors.insertions, 0);
+        assert_eq!(errors.deletions, 0);
+    }
+
+    #[test]
+    fn percentile_uses_nearest_rank() {
+        assert_eq!(percentile(&[40, 10, 30, 20], 50), Some(20));
+        assert_eq!(percentile(&[40, 10, 30, 20], 95), Some(40));
+        assert_eq!(percentile(&[], 95), None);
+    }
+
+    #[test]
+    fn latency_score_respects_thresholds() {
+        assert_eq!(latency_score(400, 500, 2_500), 100.0);
+        assert_eq!(latency_score(2_500, 500, 2_500), 0.0);
+        assert_eq!(latency_score(1_500, 500, 2_500), 50.0);
     }
 }

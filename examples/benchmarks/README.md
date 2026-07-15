@@ -12,19 +12,29 @@ cargo run --manifest-path src-tauri/Cargo.toml --example asr_benchmark -- \
   examples/benchmarks/code-switch-001-normal
 ```
 
-Run one mode, optionally with repeatable ASR hotwords:
+Run one mode, optionally with repeatable ASR hotwords or experimental VAD settings:
 
 ```bash
 cargo run --manifest-path src-tauri/Cargo.toml --example asr_benchmark -- \
-  examples/benchmarks/code-switch-001-normal --mode current \
-  --hotword 'Voice Flow'
+  examples/benchmarks/code-switch-long-001 --mode current \
+  --hotword 'Voice Flow' --end-window-ms 400
 ```
+
+`--force-to-speech-ms` is also available for controlled experiments and requires `--end-window-ms`.
 
 Modes:
 
 - `current`: production optimized bidirectional endpoint (`bigmodel_async`) with ASR second-pass recognition enabled.
 - `nostream`: higher-accuracy streaming-input endpoint (`bigmodel_nostream`).
 
-The tool decodes every source to the same 16 kHz mono signed 16-bit PCM stream, sends 200 ms packets in real time, and reports punctuation-insensitive character error rate (CER). The optional `--hotword` argument is intended for explicit experiments and is not part of the default baseline. It reads the Secret Key from `VOICE_FLOW_SECRET_KEY` or the local Voice Flow settings file. It never writes credentials, decoded PCM, provider transcripts, or benchmark results to the application log.
+The tool decodes every source to the same 16 kHz mono signed 16-bit PCM stream and sends each 200 ms packet when that audio would become available in real time. It reports the following independent scores and the raw measurements behind them:
+
+- **Accuracy**: `max(0, 100 - CER)`. CER ignores case, spaces, hyphens, and punctuation. Substitutions, insertions, and deletions are reported separately.
+- **Live responsiveness**: the mean of first-text lag and P95 provisional-update lag. A lag of at most 500 ms scores 100; 2500 ms or more scores zero, with linear interpolation between them. This is not applicable to `nostream`.
+- **Stable follow**: 50% P95 `definite` result lag, 30% of stable text returned before the final audio packet, and 20% final-tail latency. Stable lag scores 100 at 1200 ms or less and zero at 4000 ms or more. Final-tail latency scores 100 at 500 ms or less and zero at 3000 ms or more.
+
+For two-pass recognition, stable lag starts at the estimated end of speech, excluding the configured VAD silence window. Scores are diagnostic rather than a substitute for their raw P50/P95 latency and coverage values.
+
+The optional tuning arguments are intended for explicit experiments and are not part of a fixture's ground truth. The tool reads the Secret Key from `VOICE_FLOW_SECRET_KEY` or the local Voice Flow settings file. It never writes credentials, decoded PCM, provider transcripts, or benchmark results to the application log.
 
 Add future cases by copying a case directory, choosing a stable case ID, retaining the original M4A/MP3/WAV source, and manually verifying `expected_text` against the recording. Do not derive ground truth from an ASR result.

@@ -5,8 +5,6 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
-pub const DEFAULT_ENDPOINT: &str = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async";
-pub const DEFAULT_RESOURCE_ID: &str = "volc.seedasr.sauc.duration";
 pub const DEFAULT_SHORTCUT: &str = "Command+LShift+Space";
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]

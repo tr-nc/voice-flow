@@ -1,4 +1,5 @@
 mod asr;
+mod asr_options;
 mod audio;
 mod config;
 mod controller;
