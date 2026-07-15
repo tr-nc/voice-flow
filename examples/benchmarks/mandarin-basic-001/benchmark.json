@@ -3,7 +3,7 @@
   "id": "mandarin-basic-001",
   "audio": "audio.m4a",
   "language": "zh-CN",
-  "expected_text": "我来简单测试一下，就是这个的声音效果。",
+  "expected_text": "我来简单测一下，就是这个的声音效果。",
   "source": {
     "format": "m4a/aac",
     "sample_rate": 48000,
