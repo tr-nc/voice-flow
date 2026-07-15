@@ -17,58 +17,48 @@ pub enum InteractionMode {
     Toggle,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(default)]
 pub struct AppConfig {
-    pub app_id: String,
     pub secret_key: String,
     pub shortcut: String,
     pub interaction_mode: InteractionMode,
     pub microphone: String,
     pub auto_insert: bool,
-    pub endpoint: String,
-    pub resource_id: String,
 }
 
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
-            app_id: String::new(),
             secret_key: String::new(),
             shortcut: DEFAULT_SHORTCUT.to_owned(),
             interaction_mode: InteractionMode::Hold,
             microphone: String::new(),
             auto_insert: true,
-            endpoint: DEFAULT_ENDPOINT.to_owned(),
-            resource_id: DEFAULT_RESOURCE_ID.to_owned(),
         }
     }
 }
 
 impl AppConfig {
     pub fn normalized(mut self) -> Self {
-        self.app_id = self.app_id.trim().to_owned();
         self.secret_key = self.secret_key.trim().to_owned();
         self.shortcut = self.shortcut.trim().to_owned();
         if let Ok(binding) = crate::shortcut::ShortcutBinding::parse(&self.shortcut) {
             self.shortcut = binding.to_string();
         }
         self.microphone = self.microphone.trim().to_owned();
-        self.endpoint = self.endpoint.trim().to_owned();
-        self.resource_id = self.resource_id.trim().to_owned();
         self
     }
 
-    pub fn validate(&self) -> Result<()> {
-        if self.secret_key.is_empty() {
-            bail!("Secret Key / API Key is required");
-        }
+    pub fn validate_settings(&self) -> Result<()> {
         crate::shortcut::ShortcutBinding::parse(&self.shortcut)?;
-        if !self.endpoint.starts_with("wss://") {
-            bail!("The ASR endpoint must start with wss://");
-        }
-        if self.resource_id.is_empty() {
-            bail!("The VolcEngine resource ID is required");
+        Ok(())
+    }
+
+    pub fn validate_for_dictation(&self) -> Result<()> {
+        self.validate_settings()?;
+        if self.secret_key.is_empty() {
+            bail!("Secret Key is required");
         }
         Ok(())
     }
@@ -90,9 +80,18 @@ pub fn load(app: &AppHandle) -> Result<AppConfig> {
 
     let contents = fs::read_to_string(&path)
         .with_context(|| format!("failed to read settings from {}", path.display()))?;
-    let config: AppConfig = serde_json::from_str(&contents)
+    let value: serde_json::Value = serde_json::from_str(&contents)
         .with_context(|| format!("failed to parse settings from {}", path.display()))?;
-    Ok(config.normalized())
+    let needs_migration = ["app_id", "endpoint", "resource_id", "polish"]
+        .iter()
+        .any(|field| value.get(field).is_some());
+    let config: AppConfig = serde_json::from_value(value)
+        .with_context(|| format!("failed to parse settings from {}", path.display()))?;
+    let config = config.normalized();
+    if needs_migration {
+        save(app, &config)?;
+    }
+    Ok(config)
 }
 
 pub fn save(app: &AppHandle, config: &AppConfig) -> Result<()> {
@@ -131,4 +130,44 @@ pub fn save(app: &AppHandle, config: &AppConfig) -> Result<()> {
     fs::rename(&temporary, &path)
         .with_context(|| format!("failed to replace settings at {}", path.display()))?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn user_settings_round_trip() {
+        let expected = AppConfig {
+            secret_key: "local-secret".to_owned(),
+            shortcut: "RCommand".to_owned(),
+            interaction_mode: InteractionMode::Toggle,
+            microphone: "External microphone".to_owned(),
+            auto_insert: false,
+        };
+
+        let encoded = serde_json::to_vec(&expected).unwrap();
+        let decoded: AppConfig = serde_json::from_slice(&encoded).unwrap();
+        assert_eq!(decoded, expected);
+    }
+
+    #[test]
+    fn legacy_connection_fields_are_not_serialized() {
+        let legacy = serde_json::json!({
+            "app_id": "legacy-app",
+            "endpoint": "wss://legacy.example",
+            "resource_id": "legacy-resource",
+            "secret_key": "local-secret",
+            "shortcut": "Command",
+            "interaction_mode": "hold",
+            "microphone": "",
+            "auto_insert": true
+        });
+        let config: AppConfig = serde_json::from_value(legacy).unwrap();
+        let current = serde_json::to_value(config).unwrap();
+
+        assert!(current.get("app_id").is_none());
+        assert!(current.get("endpoint").is_none());
+        assert!(current.get("resource_id").is_none());
+    }
 }

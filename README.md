@@ -8,7 +8,7 @@ The interface uses a quiet, warm, writing-focused visual system rather than a hi
 
 - macOS runtime support today; Linux-facing boundaries are isolated for a later implementation.
 - VolcEngine WebSocket V3 bidirectional streaming ASR.
-- Legacy `APP ID + Access Token` authentication and current API-key-only authentication.
+- One locally stored Secret Key for VolcEngine authentication.
 - Global hold-to-talk and toggle shortcuts using any supported single key or key chord, including left/right modifier distinction.
 - Manual microphone selection, with a system-default option.
 - Live, click-through transcript-only overlay with no controls or decorative chrome.
@@ -27,14 +27,11 @@ npm run tauri dev
 
 On first use, macOS asks for microphone access. Global side-specific shortcut detection and automatic insertion also need Accessibility permission for Voice Flow (or the terminal during development) under **System Settings → Privacy & Security → Accessibility**.
 
-## Credentials
+## Credentials and settings
 
-The settings screen supports both VolcEngine credential formats:
+Enter the VolcEngine **Secret Key** once. It is stored only in the local settings file. The Secret Key, selected microphone, shortcut, interaction mode, and insertion preference are saved automatically whenever they change.
 
-- Enter an **APP ID** and put the legacy **Access Token** in the Secret Key field; Voice Flow sends `X-Api-App-Key` and `X-Api-Access-Key`.
-- Leave APP ID empty and put a current **API Key** in the Secret Key field; Voice Flow sends `X-Api-Key`.
-
-The default ASR endpoint is `wss://openspeech.bytedance.com/api/v3/sauc/bigmodel`, using resource ID `volc.seedasr.sauc.duration`.
+Voice Flow uses the fixed ASR endpoint `wss://openspeech.bytedance.com/api/v3/sauc/bigmodel` and resource ID `volc.seedasr.sauc.duration`.
 
 ## Architecture
 
@@ -47,7 +44,7 @@ The default ASR endpoint is `wss://openspeech.bytedance.com/api/v3/sauc/bigmodel
 - `src-tauri/src/config.rs`: local settings and validation.
 - `src/`: framework-free TypeScript UI for the settings window and transcript-only overlay.
 
-Provider policy (endpoint/resource ID), microphone, interaction mode, shortcut, and insertion behavior live in the settings model so future providers or Linux integrations do not require UI orchestration rewrites.
+Provider endpoint/resource policy is owned by the backend. User choices such as microphone, interaction mode, shortcut, and insertion behavior live in the automatically persisted settings model.
 
 Runtime logs are written to stdout and `~/Library/Logs/dev.voiceflow.desktop/voice-flow.log` with identical content. Transcript text, credentials, and raw audio are never logged. See [`AGENTS.md`](AGENTS.md) for diagnostic commands.
 

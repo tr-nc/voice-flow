@@ -15,7 +15,7 @@ use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::audio::{AudioCapture, AudioEvent, TARGET_SAMPLE_RATE};
-use crate::config::AppConfig;
+use crate::config::{AppConfig, DEFAULT_ENDPOINT, DEFAULT_RESOURCE_ID};
 
 const AUDIO_PACKET_SAMPLES: usize = 3_200;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -43,25 +43,22 @@ pub async fn recognize(
     stop_receiver: oneshot::Receiver<()>,
     events: mpsc::UnboundedSender<StreamEvent>,
 ) -> Result<String> {
-    config.validate()?;
+    config.validate_for_dictation()?;
     info!(
-        endpoint = %config.endpoint.split(['?', '#']).next().unwrap_or("invalid-endpoint"),
-        resource_id = %config.resource_id,
-        auth_mode = if config.app_id.is_empty() { "api-key" } else { "legacy-app-id" },
+        endpoint = DEFAULT_ENDPOINT,
+        resource_id = DEFAULT_RESOURCE_ID,
         "preparing streaming ASR session"
     );
 
     let mut stop_receiver = stop_receiver;
     let request_id = Uuid::new_v4().to_string();
-    let mut request = config
-        .endpoint
-        .as_str()
+    let mut request = DEFAULT_ENDPOINT
         .into_client_request()
         .context("failed to create the VolcEngine WebSocket request")?;
     let headers = request.headers_mut();
     headers.insert(
         "x-api-resource-id",
-        HeaderValue::from_str(&config.resource_id).context("resource ID is not a valid header")?,
+        HeaderValue::from_static(DEFAULT_RESOURCE_ID),
     );
     headers.insert(
         "x-api-connect-id",
@@ -73,23 +70,10 @@ pub async fn recognize(
     );
     headers.insert("x-api-sequence", HeaderValue::from_static("-1"));
 
-    if config.app_id.is_empty() {
-        headers.insert(
-            "x-api-key",
-            HeaderValue::from_str(&config.secret_key)
-                .context("Secret Key / API Key is not a valid header")?,
-        );
-    } else {
-        headers.insert(
-            "x-api-app-key",
-            HeaderValue::from_str(&config.app_id).context("APP ID is not a valid header")?,
-        );
-        headers.insert(
-            "x-api-access-key",
-            HeaderValue::from_str(&config.secret_key)
-                .context("Secret Key / Access Token is not a valid header")?,
-        );
-    }
+    headers.insert(
+        "x-api-key",
+        HeaderValue::from_str(&config.secret_key).context("Secret Key is not a valid header")?,
+    );
 
     let connect_started = Instant::now();
     let connection = tokio::select! {
@@ -290,7 +274,6 @@ mod tests {
         install_tls_provider().unwrap();
         let config = AppConfig {
             secret_key: "test-key".to_owned(),
-            endpoint: "wss://192.0.2.1/voice-flow-test".to_owned(),
             ..AppConfig::default()
         };
         let (stop_sender, stop_receiver) = oneshot::channel();

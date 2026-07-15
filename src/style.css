@@ -49,8 +49,7 @@ button {
 
 button:focus-visible,
 input:focus-visible,
-select:focus-visible,
-summary:focus-visible {
+select:focus-visible {
   outline: 2px solid rgb(200 102 70 / 35%);
   outline-offset: 2px;
 }
@@ -130,15 +129,6 @@ summary:focus-visible {
   background: var(--accent);
 }
 
-.preview-meta {
-  margin: 0;
-  font-family: var(--mono);
-  font-size: 8px;
-  font-weight: 650;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
 .brand-copy {
   min-width: 0;
 }
@@ -147,6 +137,7 @@ summary:focus-visible {
   display: flex;
   height: 24px;
   align-items: center;
+  justify-content: center;
   gap: 4px;
   padding: 0 18px;
   border-bottom: 1px solid #ebe8e2;
@@ -243,8 +234,7 @@ summary:focus-visible {
   display: none;
 }
 
-.ghost-button,
-.primary-button {
+.ghost-button {
   border: 0;
   cursor: pointer;
   transition: transform 140ms ease, border-color 140ms ease, background 140ms ease;
@@ -289,24 +279,17 @@ summary:focus-visible {
 
 .content-scroll {
   overflow: visible;
-  padding: 13px 13px 0;
+  padding: 13px;
 }
 
-.panel,
-.advanced-panel,
-.preview-panel {
+.panel {
+  padding: 16px;
   border: 1px solid var(--line);
   border-radius: 14px;
   background: #fffefa;
 }
 
-.panel {
-  padding: 16px;
-}
-
-.panel + .panel,
-.panel + .advanced-panel,
-.advanced-panel + .preview-panel {
+.panel + .panel {
   margin-top: 10px;
 }
 
@@ -341,9 +324,7 @@ summary:focus-visible {
   color: #64705f;
 }
 
-.field-grid,
-.input-layout,
-.advanced-grid {
+.input-layout {
   display: grid;
   grid-template-columns: 1fr;
   gap: 12px;
@@ -362,14 +343,6 @@ summary:focus-visible {
   color: #504c47;
   font-size: 10px;
   font-weight: 650;
-}
-
-.field > span em {
-  margin-left: 5px;
-  color: var(--faint);
-  font-size: 9px;
-  font-style: normal;
-  font-weight: 430;
 }
 
 .field input,
@@ -428,7 +401,6 @@ summary:focus-visible {
   font-weight: 650;
 }
 
-.field-note,
 .field small {
   margin: 8px 0 0;
   color: #8c877f;
@@ -681,136 +653,6 @@ summary:focus-visible {
   transform: translateX(15px);
 }
 
-.advanced-panel {
-  padding: 0 16px;
-}
-
-.advanced-panel summary {
-  padding: 16px 0;
-  cursor: pointer;
-  font-size: 10px;
-  font-weight: 630;
-  list-style: none;
-}
-
-.advanced-panel summary::-webkit-details-marker {
-  display: none;
-}
-
-.advanced-panel summary::before {
-  display: inline-block;
-  width: 17px;
-  color: #a35d45;
-  content: "+";
-  font-family: var(--mono);
-}
-
-.advanced-panel[open] summary::before {
-  content: "−";
-}
-
-.advanced-panel summary span {
-  margin-left: 5px;
-  color: #99938b;
-  font-weight: 430;
-}
-
-.advanced-grid {
-  padding: 0 0 19px 17px;
-}
-
-.preview-panel {
-  position: relative;
-  min-height: 82px;
-  overflow: hidden;
-  padding: 15px 16px;
-  background: #f5f2ed;
-}
-
-.preview-panel::before {
-  position: absolute;
-  top: 0;
-  left: 0;
-  width: 2px;
-  height: 100%;
-  background: #bbb5ac;
-  content: "";
-}
-
-.preview-panel[data-phase="listening"]::before {
-  background: var(--accent);
-}
-
-.preview-panel[data-phase="complete"]::before {
-  background: var(--sage);
-}
-
-.preview-meta {
-  display: flex;
-  justify-content: space-between;
-  color: #8d877f;
-}
-
-.preview-panel p {
-  margin: 13px 0 0;
-  color: #504c47;
-  font-size: 12px;
-  line-height: 1.65;
-}
-
-.action-bar {
-  display: flex;
-  min-height: 68px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-top: 13px;
-  padding: 12px 14px;
-  border-top: 1px solid var(--line);
-  background: #faf9f5;
-}
-
-.action-bar p {
-  margin: 0;
-  color: #918b83;
-  font-size: 9px;
-}
-
-.action-bar p.error-text {
-  max-width: 65%;
-  color: #aa4f4f;
-}
-
-.primary-button {
-  display: flex;
-  min-width: 145px;
-  min-height: 41px;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0 10px 0 16px;
-  border-radius: 10px;
-  background: #3d3935;
-  color: #fffdf9;
-  font-size: 10px;
-  font-weight: 630;
-}
-
-.primary-button i {
-  display: grid;
-  width: 23px;
-  height: 23px;
-  place-items: center;
-  border-radius: 7px;
-  background: #57514b;
-  font-style: normal;
-}
-
-.primary-button:hover {
-  background: #2f2c29;
-  transform: translateY(-1px);
-}
-
-.primary-button:disabled,
 .ghost-button:disabled {
   cursor: wait;
   opacity: 0.55;

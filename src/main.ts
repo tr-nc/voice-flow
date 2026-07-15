@@ -14,14 +14,11 @@ type RuntimePhase =
   | "error";
 
 type AppConfig = {
-  app_id: string;
   secret_key: string;
   shortcut: string;
   interaction_mode: InteractionMode;
   microphone: string;
   auto_insert: boolean;
-  endpoint: string;
-  resource_id: string;
 };
 
 type Microphone = {
@@ -83,20 +80,13 @@ async function mountSettings(root: HTMLDivElement) {
               <span class="local-badge">仅存本机</span>
             </div>
 
-            <div class="field-grid">
-              <label class="field">
-                <span>APP ID <em>旧版鉴权需要</em></span>
-                <input id="app-id" type="text" autocomplete="off" placeholder="留空则使用 API Key 鉴权" />
-              </label>
-              <label class="field">
-                <span>Secret Key / API Key</span>
-                <div class="secret-field">
-                  <input id="secret-key" type="password" autocomplete="off" placeholder="输入 Access Token 或 API Key" />
-                  <button id="reveal-secret" type="button" aria-label="显示密钥">显示</button>
-                </div>
-              </label>
-            </div>
-            <p class="field-note">填写 APP ID 时按旧版 APP ID + Access Token 鉴权；留空则按新版 API Key 鉴权。</p>
+            <label class="field">
+              <span>Secret Key</span>
+              <div class="secret-field">
+                <input id="secret-key" type="password" autocomplete="off" placeholder="输入 Secret Key" />
+                <button id="reveal-secret" type="button" aria-label="显示密钥">显示</button>
+              </div>
+            </label>
           </section>
 
           <section class="panel input-panel">
@@ -162,60 +152,29 @@ async function mountSettings(root: HTMLDivElement) {
             </div>
           </section>
 
-          <details class="advanced-panel">
-            <summary>高级连接设置 <span>用于切换服务资源</span></summary>
-            <div class="advanced-grid">
-              <label class="field">
-                <span>WebSocket Endpoint</span>
-                <input id="endpoint" type="url" />
-              </label>
-              <label class="field">
-                <span>Resource ID</span>
-                <input id="resource-id" type="text" />
-              </label>
-            </div>
-          </details>
-
-          <div class="preview-panel" id="preview-panel">
-            <div class="preview-meta">
-              <span>实时文字</span>
-              <span id="preview-state">等待试说</span>
-            </div>
-            <p id="preview-text">实时识别的内容会同时显示在这里。</p>
-          </div>
         </div>
-
-      <footer class="action-bar">
-        <p id="save-message">修改只保存在这台设备上</p>
-        <button class="primary-button" id="save-button" type="button">
-          <span>保存并启用</span>
-          <i aria-hidden="true">→</i>
-        </button>
-      </footer>
     </main>
   `;
 
-  const appId = element<HTMLInputElement>("#app-id");
   const secretKey = element<HTMLInputElement>("#secret-key");
   const microphone = element<HTMLSelectElement>("#microphone");
+  const microphoneNote = element<HTMLElement>("#microphone-note");
   const shortcutCapture = element<HTMLButtonElement>("#shortcut-capture");
   const shortcutValue = element<HTMLElement>("#shortcut-value");
   const autoInsert = element<HTMLInputElement>("#auto-insert");
-  const endpoint = element<HTMLInputElement>("#endpoint");
-  const resourceId = element<HTMLInputElement>("#resource-id");
-  const saveButton = element<HTMLButtonElement>("#save-button");
-  const saveMessage = element<HTMLElement>("#save-message");
   const testButton = element<HTMLButtonElement>("#test-button");
   const testLabel = element<HTMLElement>("#test-label");
-  const previewText = element<HTMLElement>("#preview-text");
-  const previewState = element<HTMLElement>("#preview-state");
-  const previewPanel = element<HTMLElement>("#preview-panel");
 
   let config: AppConfig;
   let runtime: RuntimeSnapshot;
   let capturingShortcut = false;
   let capturedShortcutKeys: string[] = [];
   let active = false;
+  let saveRevision = 0;
+  let persistedRevision = 0;
+  let saveTimer: number | undefined;
+  let saveLoop: Promise<void> | undefined;
+  let lastSaveError: string | undefined;
   let unlistenRuntime: UnlistenFn | undefined;
 
   try {
@@ -230,7 +189,6 @@ async function mountSettings(root: HTMLDivElement) {
     applyConfig(config);
     applyRuntime(runtime);
   } catch (error) {
-    showSaveMessage(asMessage(error), true);
     setStatus("error", "初始化失败", asMessage(error));
     return;
   }
@@ -242,7 +200,10 @@ async function mountSettings(root: HTMLDivElement) {
   window.addEventListener("beforeunload", () => unlistenRuntime?.());
 
   document.querySelectorAll<HTMLInputElement>('input[name="mode"]').forEach((input) => {
-    input.addEventListener("change", updateModeCards);
+    input.addEventListener("change", () => {
+      updateModeCards();
+      scheduleConfigSave();
+    });
   });
 
   element<HTMLButtonElement>("#reveal-secret").addEventListener("click", (event) => {
@@ -251,6 +212,13 @@ async function mountSettings(root: HTMLDivElement) {
     secretKey.type = revealed ? "password" : "text";
     button.textContent = revealed ? "显示" : "隐藏";
   });
+
+  secretKey.addEventListener("input", () => scheduleConfigSave(350));
+  microphone.addEventListener("change", () => {
+    updateMicrophoneNote();
+    scheduleConfigSave();
+  });
+  autoInsert.addEventListener("change", () => scheduleConfigSave());
 
   shortcutCapture.addEventListener("click", () => {
     if (capturingShortcut) {
@@ -283,58 +251,47 @@ async function mountSettings(root: HTMLDivElement) {
     event.stopPropagation();
     config.shortcut = capturedShortcutKeys.join("+");
     finishShortcutCapture(config.shortcut);
-  });
-
-  saveButton.addEventListener("click", async () => {
-    saveButton.disabled = true;
-    showSaveMessage("正在保存并注册快捷键…");
-    try {
-      config = await invoke<AppConfig>("save_config", { config: readConfig() });
-      applyConfig(config);
-      showSaveMessage("已保存，快捷键现在可以在任意应用中使用");
-      setStatus("ready", "语音输入已就绪", prettyShortcut(config.shortcut));
-    } catch (error) {
-      showSaveMessage(asMessage(error), true);
-    } finally {
-      saveButton.disabled = false;
-    }
+    scheduleConfigSave();
   });
 
   testButton.addEventListener("click", async () => {
     testButton.disabled = true;
     try {
+      if (!active) {
+        await flushConfigSave();
+        if (lastSaveError) return;
+      }
       await invoke(active ? "stop_dictation" : "start_dictation");
     } catch (error) {
-      showSaveMessage(asMessage(error), true);
+      setStatus("error", "语音输入出错", asMessage(error));
     } finally {
       testButton.disabled = false;
     }
   });
 
   function applyConfig(next: AppConfig) {
-    appId.value = next.app_id;
     secretKey.value = next.secret_key;
     microphone.value = next.microphone;
+    updateMicrophoneNote();
     shortcutValue.textContent = prettyShortcut(next.shortcut);
     autoInsert.checked = next.auto_insert;
-    endpoint.value = next.endpoint;
-    resourceId.value = next.resource_id;
     const selectedMode = document.querySelector<HTMLInputElement>(`input[name="mode"][value="${next.interaction_mode}"]`);
     if (selectedMode) selectedMode.checked = true;
     updateModeCards();
   }
 
+  function updateMicrophoneNote() {
+    microphoneNote.textContent = microphone.value ? "已自动保存此录音设备" : "跟随系统当前默认设备";
+  }
+
   function readConfig(): AppConfig {
     const interactionMode = document.querySelector<HTMLInputElement>('input[name="mode"]:checked')?.value as InteractionMode | undefined;
     return {
-      app_id: appId.value.trim(),
       secret_key: secretKey.value.trim(),
       shortcut: config.shortcut,
       interaction_mode: interactionMode ?? "hold",
       microphone: microphone.value,
       auto_insert: autoInsert.checked,
-      endpoint: endpoint.value.trim(),
-      resource_id: resourceId.value.trim(),
     };
   }
 
@@ -342,14 +299,11 @@ async function mountSettings(root: HTMLDivElement) {
     active = ["connecting", "listening", "finalizing", "inserting"].includes(next.phase);
     testLabel.textContent = active ? "结束并插入" : "试说一次";
     testButton.classList.toggle("is-recording", active);
-    previewPanel.dataset.phase = next.phase;
-    previewState.textContent = phaseLabel(next.phase);
-    if (next.transcript) previewText.textContent = next.transcript;
     if (next.phase === "idle" && !next.transcript) {
-      setStatus(secretKey.value ? "ready" : "setup", secretKey.value ? "语音输入已就绪" : "等待完成配置", prettyShortcut(config.shortcut));
+      setStatus(secretKey.value ? "ready" : "setup", secretKey.value ? "语音输入已就绪" : "等待填写 Secret Key", prettyShortcut(config.shortcut));
+      if (persistedRevision < saveRevision) void flushConfigSave();
     } else if (next.phase === "error") {
       setStatus("error", "语音输入出错", next.message);
-      previewText.textContent = next.message;
     } else {
       setStatus(next.phase, phaseLabel(next.phase), next.message);
     }
@@ -362,9 +316,44 @@ async function mountSettings(root: HTMLDivElement) {
     shortcutCapture.querySelector("small")!.textContent = "支持单键并区分左右";
   }
 
-  function showSaveMessage(message: string, isError = false) {
-    saveMessage.textContent = message;
-    saveMessage.classList.toggle("error-text", isError);
+  function scheduleConfigSave(delay = 0) {
+    saveRevision += 1;
+    if (saveTimer !== undefined) window.clearTimeout(saveTimer);
+    saveTimer = window.setTimeout(() => {
+      saveTimer = undefined;
+      void flushConfigSave();
+    }, delay);
+  }
+
+  function flushConfigSave(): Promise<void> {
+    if (saveTimer !== undefined) {
+      window.clearTimeout(saveTimer);
+      saveTimer = undefined;
+    }
+    if (saveLoop) return saveLoop;
+    if (persistedRevision >= saveRevision || active) return Promise.resolve();
+
+    saveLoop = persistPendingConfig().finally(() => {
+      saveLoop = undefined;
+      if (!active && persistedRevision < saveRevision) void flushConfigSave();
+    });
+    return saveLoop;
+  }
+
+  async function persistPendingConfig() {
+    while (!active && persistedRevision < saveRevision) {
+      const targetRevision = saveRevision;
+      try {
+        config = await invoke<AppConfig>("save_config", { config: readConfig() });
+        persistedRevision = targetRevision;
+        lastSaveError = undefined;
+        setStatus(secretKey.value ? "ready" : "setup", secretKey.value ? "语音输入已就绪" : "等待填写 Secret Key", prettyShortcut(config.shortcut));
+      } catch (error) {
+        persistedRevision = targetRevision;
+        lastSaveError = asMessage(error);
+        setStatus("error", "设置自动保存失败", lastSaveError);
+      }
+    }
   }
 }
 

@@ -42,14 +42,16 @@ fn save_config(
     }
 
     let config = config.normalized();
-    config.validate().map_err(|error| error.to_string())?;
+    config
+        .validate_settings()
+        .map_err(|error| error.to_string())?;
     config::save(&app, &config).map_err(|error| error.to_string())?;
     state.replace_config(config.clone());
     info!(
         shortcut = %config.shortcut,
         mode = ?config.interaction_mode,
         microphone = if config.microphone.is_empty() { "system-default" } else { &config.microphone },
-        auth_mode = if config.app_id.is_empty() { "api-key" } else { "legacy-app-id" },
+        has_secret_key = !config.secret_key.is_empty(),
         auto_insert = config.auto_insert,
         "configuration saved"
     );
@@ -114,8 +116,7 @@ pub fn run() {
                 version = env!("CARGO_PKG_VERSION"),
                 log_path = %log_path.display(),
                 shortcut = %config.shortcut,
-                auth_mode = if config.app_id.is_empty() { "api-key" } else { "legacy-app-id" },
-                has_credential = !config.secret_key.is_empty(),
+                has_secret_key = !config.secret_key.is_empty(),
                 "Voice Flow starting"
             );
             app.state::<AppState>().replace_config(config);

@@ -6,7 +6,7 @@
 - [x] VolcEngine bidirectional streaming ASR
 - [x] click-through, transcript-only overlay
 - [x] hold-to-talk and toggle shortcuts with side-specific modifier keys
-- [x] selectable microphone
+- [x] automatically persisted microphone, shortcut, and interaction settings
 - [x] active-cursor insertion
 - [x] ASR punctuation and inverse-text normalization
 - [x] fixed-file and stdout diagnostic logging

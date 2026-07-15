@@ -101,7 +101,9 @@ impl AppState {
 pub fn begin(app: &AppHandle) -> Result<(), String> {
     let state = app.state::<AppState>();
     let config = state.current_config();
-    config.validate().map_err(|error| error.to_string())?;
+    config
+        .validate_for_dictation()
+        .map_err(|error| error.to_string())?;
     info!(
         mode = ?config.interaction_mode,
         microphone = if config.microphone.is_empty() { "system-default" } else { &config.microphone },
