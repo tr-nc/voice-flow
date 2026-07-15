@@ -36,43 +36,43 @@ struct BenchmarkCase {
 
 #[derive(Debug, Clone, Copy)]
 enum RecognitionMode {
+    Legacy,
     Current,
-    Optimized,
     Nostream,
 }
 
 impl RecognitionMode {
     fn all() -> [Self; 3] {
-        [Self::Current, Self::Optimized, Self::Nostream]
+        [Self::Legacy, Self::Current, Self::Nostream]
     }
 
     fn parse(value: &str) -> Result<Self> {
         match value {
-            "current" => Ok(Self::Current),
-            "optimized" => Ok(Self::Optimized),
+            "legacy" => Ok(Self::Legacy),
+            "current" | "optimized" => Ok(Self::Current),
             "nostream" => Ok(Self::Nostream),
-            _ => bail!("unknown mode {value:?}; expected current, optimized, nostream, or all"),
+            _ => bail!("unknown mode {value:?}; expected legacy, current, nostream, or all"),
         }
     }
 
     fn name(self) -> &'static str {
         match self {
+            Self::Legacy => "legacy",
             Self::Current => "current",
-            Self::Optimized => "optimized",
             Self::Nostream => "nostream",
         }
     }
 
     fn endpoint(self) -> &'static str {
         match self {
-            Self::Current => "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel",
-            Self::Optimized => "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async",
+            Self::Legacy => "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel",
+            Self::Current => "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async",
             Self::Nostream => "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_nostream",
         }
     }
 
     fn enable_nonstream(self) -> bool {
-        matches!(self, Self::Optimized)
+        matches!(self, Self::Current)
     }
 }
 
@@ -181,7 +181,7 @@ fn parse_args() -> Result<Cli> {
 fn print_help() {
     println!(
         "Voice Flow ASR benchmark\n\n\
-Usage:\n  cargo run --manifest-path src-tauri/Cargo.toml --example asr_benchmark -- \\\n    examples/benchmarks/mandarin-basic-001 [--mode all|current|optimized|nostream] \\\n    [--hotword WORD]...\n\n\
+Usage:\n  cargo run --manifest-path src-tauri/Cargo.toml --example asr_benchmark -- \\\n    examples/benchmarks/mandarin-basic-001 [--mode all|legacy|current|nostream] \\\n    [--hotword WORD]...\n\n\
 The input may be a benchmark directory containing benchmark.json, or a directly\n\
 decodable audio file accompanied by a sibling benchmark.json. ffmpeg must be installed.\n\
 The Secret Key is read from VOICE_FLOW_SECRET_KEY or the local Voice Flow settings file."

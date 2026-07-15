@@ -93,24 +93,7 @@ pub async fn recognize(
     );
     let (mut writer, mut reader) = websocket.split();
 
-    let request_payload = json!({
-        "user": { "uid": "voice-flow" },
-        "audio": {
-            "format": "pcm",
-            "codec": "raw",
-            "rate": TARGET_SAMPLE_RATE,
-            "bits": 16,
-            "channel": 1
-        },
-        "request": {
-            "model_name": "bigmodel",
-            "enable_itn": true,
-            "enable_punc": true,
-            "enable_ddc": false,
-            "show_utterances": true,
-            "result_type": "full"
-        }
-    });
+    let request_payload = request_payload();
     timeout(
         SOCKET_WRITE_TIMEOUT,
         writer.send(Message::Binary(
@@ -200,6 +183,28 @@ pub async fn recognize(
     Ok(final_text)
 }
 
+fn request_payload() -> serde_json::Value {
+    json!({
+        "user": { "uid": "voice-flow" },
+        "audio": {
+            "format": "pcm",
+            "codec": "raw",
+            "rate": TARGET_SAMPLE_RATE,
+            "bits": 16,
+            "channel": 1
+        },
+        "request": {
+            "model_name": "bigmodel",
+            "enable_nonstream": true,
+            "enable_itn": true,
+            "enable_punc": true,
+            "enable_ddc": false,
+            "show_utterances": true,
+            "result_type": "full"
+        }
+    })
+}
+
 async fn send_audio<S>(writer: &mut S, sequence: i32, samples: &[i16], is_last: bool) -> Result<()>
 where
     S: futures_util::Sink<Message> + Unpin,
@@ -268,6 +273,15 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn production_request_enables_asr_second_pass() {
+        let payload = request_payload();
+        assert_eq!(
+            payload.pointer("/request/enable_nonstream"),
+            Some(&serde_json::Value::Bool(true))
+        );
+    }
 
     #[tokio::test]
     async fn stop_cancels_a_session_while_it_is_connecting() {

@@ -16,15 +16,17 @@ Run one mode, optionally with repeatable ASR hotwords:
 
 ```bash
 cargo run --manifest-path src-tauri/Cargo.toml --example asr_benchmark -- \
-  examples/benchmarks/mandarin-basic-001 --mode optimized \
+  examples/benchmarks/mandarin-basic-001 --mode current \
   --hotword 'Voice Flow'
 ```
 
 Modes:
 
-- `current`: current production endpoint (`bigmodel`).
-- `optimized`: optimized bidirectional endpoint (`bigmodel_async`) with ASR second-pass recognition enabled.
+- `legacy`: original first-pass bidirectional endpoint (`bigmodel`).
+- `current`: production optimized bidirectional endpoint (`bigmodel_async`) with ASR second-pass recognition enabled.
 - `nostream`: higher-accuracy streaming-input endpoint (`bigmodel_nostream`).
+
+`optimized` remains accepted as a backward-compatible alias for `current`.
 
 The tool decodes every source to the same 16 kHz mono signed 16-bit PCM stream, sends 200 ms packets in real time, and reports punctuation-insensitive character error rate (CER). The optional `--hotword` argument is intended for explicit experiments and is not part of the default baseline. It reads the Secret Key from `VOICE_FLOW_SECRET_KEY` or the local Voice Flow settings file. It never writes credentials, decoded PCM, provider transcripts, or benchmark results to the application log.
 

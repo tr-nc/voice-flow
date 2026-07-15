@@ -31,7 +31,7 @@ On first use, macOS asks for microphone access. Global side-specific shortcut de
 
 Enter the VolcEngine **Secret Key** once. It is stored only in the local settings file. The Secret Key, selected microphone, shortcut, interaction mode, and insertion preference are saved automatically whenever they change.
 
-Voice Flow uses the fixed ASR endpoint `wss://openspeech.bytedance.com/api/v3/sauc/bigmodel` and resource ID `volc.seedasr.sauc.duration`.
+Voice Flow uses the optimized bidirectional ASR endpoint `wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async`, enables ASR second-pass recognition for accurate final text, and uses resource ID `volc.seedasr.sauc.duration`.
 
 ## Architecture
 
@@ -52,7 +52,7 @@ Licensed under [MIT](LICENSE). See [CONTRIBUTING.md](CONTRIBUTING.md) for projec
 
 ## ASR benchmarks
 
-Human-reviewed audio fixtures and their expected transcripts live in [`examples/benchmarks`](examples/benchmarks). The benchmark accepts M4A, MP3, WAV, and other formats decoded by `ffmpeg`, then compares the current streaming endpoint with optimized second-pass and non-streaming recognition using identical 200 ms PCM packets.
+Human-reviewed audio fixtures and their expected transcripts live in [`examples/benchmarks`](examples/benchmarks). The benchmark accepts M4A, MP3, WAV, and other formats decoded by `ffmpeg`, then compares the legacy first-pass endpoint with current second-pass and non-streaming recognition using identical 200 ms PCM packets.
 
 ```bash
 cargo run --manifest-path src-tauri/Cargo.toml --example asr_benchmark -- \
