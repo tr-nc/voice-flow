@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "id": "code-switch-001-fast",
+  "audio": "audio.m4a",
+  "language": "zh-CN",
+  "expected_text": "今天用 Voice Flow 做一次 real-time speech recognition 测试，看看中英文切换是否准确。",
+  "source": {
+    "format": "m4a/aac",
+    "sample_rate": 48000,
+    "channels": 2,
+    "duration_ms": 6400,
+    "sha256": "4eba0745dd6879435acf163459f39544962f05a5ab6ee134e7d1a439ea30ea5d"
+  }
+}
