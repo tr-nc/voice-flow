@@ -7,7 +7,7 @@ use tauri::{AppHandle, Manager};
 
 pub const DEFAULT_ENDPOINT: &str = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel";
 pub const DEFAULT_RESOURCE_ID: &str = "volc.seedasr.sauc.duration";
-pub const DEFAULT_SHORTCUT: &str = "CommandOrControl+Shift+Space";
+pub const DEFAULT_SHORTCUT: &str = "Command+LShift+Space";
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -25,7 +25,6 @@ pub struct AppConfig {
     pub shortcut: String,
     pub interaction_mode: InteractionMode,
     pub microphone: String,
-    pub polish: bool,
     pub auto_insert: bool,
     pub endpoint: String,
     pub resource_id: String,
@@ -39,7 +38,6 @@ impl Default for AppConfig {
             shortcut: DEFAULT_SHORTCUT.to_owned(),
             interaction_mode: InteractionMode::Hold,
             microphone: String::new(),
-            polish: true,
             auto_insert: true,
             endpoint: DEFAULT_ENDPOINT.to_owned(),
             resource_id: DEFAULT_RESOURCE_ID.to_owned(),
@@ -52,6 +50,9 @@ impl AppConfig {
         self.app_id = self.app_id.trim().to_owned();
         self.secret_key = self.secret_key.trim().to_owned();
         self.shortcut = self.shortcut.trim().to_owned();
+        if let Ok(binding) = crate::shortcut::ShortcutBinding::parse(&self.shortcut) {
+            self.shortcut = binding.to_string();
+        }
         self.microphone = self.microphone.trim().to_owned();
         self.endpoint = self.endpoint.trim().to_owned();
         self.resource_id = self.resource_id.trim().to_owned();
@@ -62,9 +63,7 @@ impl AppConfig {
         if self.secret_key.is_empty() {
             bail!("Secret Key / API Key is required");
         }
-        if self.shortcut.is_empty() {
-            bail!("A global shortcut is required");
-        }
+        crate::shortcut::ShortcutBinding::parse(&self.shortcut)?;
         if !self.endpoint.starts_with("wss://") {
             bail!("The ASR endpoint must start with wss://");
         }

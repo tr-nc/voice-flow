@@ -11,6 +11,7 @@ use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::protocol::Message;
+use tracing::{debug, info};
 use uuid::Uuid;
 
 use crate::audio::{AudioCapture, AudioEvent, TARGET_SAMPLE_RATE};
@@ -34,6 +35,12 @@ pub async fn recognize(
     events: mpsc::UnboundedSender<StreamEvent>,
 ) -> Result<String> {
     config.validate()?;
+    info!(
+        endpoint = %config.endpoint.split(['?', '#']).next().unwrap_or("invalid-endpoint"),
+        resource_id = %config.resource_id,
+        auth_mode = if config.app_id.is_empty() { "api-key" } else { "legacy-app-id" },
+        "preparing streaming ASR session"
+    );
 
     let (audio_sender, mut audio_receiver) = mpsc::unbounded_channel();
     let capture = AudioCapture::start(&config.microphone, audio_sender)?;
@@ -77,10 +84,16 @@ pub async fn recognize(
         );
     }
 
-    let (websocket, _) = timeout(CONNECT_TIMEOUT, connect_async(request))
+    let connect_started = Instant::now();
+    let (websocket, response) = timeout(CONNECT_TIMEOUT, connect_async(request))
         .await
         .context("timed out while connecting to VolcEngine ASR")?
         .context("failed to connect to VolcEngine ASR")?;
+    info!(
+        elapsed_ms = connect_started.elapsed().as_millis(),
+        status = %response.status(),
+        "ASR WebSocket connected"
+    );
     let (mut writer, mut reader) = websocket.split();
 
     let request_payload = json!({
@@ -96,7 +109,7 @@ pub async fn recognize(
             "model_name": "bigmodel",
             "enable_itn": true,
             "enable_punc": true,
-            "enable_ddc": config.polish,
+            "enable_ddc": false,
             "show_utterances": true,
             "result_type": "full"
         }
@@ -107,6 +120,7 @@ pub async fn recognize(
         ))
         .await
         .context("failed to send the initial ASR request")?;
+    debug!(sequence = 1, "initial ASR request sent");
     let _ = events.send(StreamEvent::Connected);
 
     let mut sequence = 2;
@@ -161,6 +175,7 @@ pub async fn recognize(
     }
     send_audio(&mut writer, sequence, &pending_samples, true).await?;
 
+    let final_wait_started = Instant::now();
     timeout(FINAL_RESPONSE_TIMEOUT, async {
         loop {
             let message = reader.next().await;
@@ -171,6 +186,11 @@ pub async fn recognize(
     })
     .await
     .context("timed out waiting for the final ASR response")??;
+    info!(
+        final_wait_ms = final_wait_started.elapsed().as_millis(),
+        characters = final_text.chars().count(),
+        "final ASR response received"
+    );
 
     Ok(final_text)
 }
@@ -184,6 +204,13 @@ where
         .iter()
         .flat_map(|sample| sample.to_le_bytes())
         .collect::<Vec<_>>();
+    debug!(
+        sequence,
+        samples = samples.len(),
+        pcm_bytes = pcm.len(),
+        is_last,
+        "sending ASR audio packet"
+    );
     writer
         .send(Message::Binary(
             protocol::audio_request(sequence, &pcm, is_last)?.into(),
@@ -205,6 +232,7 @@ where
     match message {
         Some(Ok(Message::Binary(data))) => {
             let frame = protocol::parse_server_frame(data.as_ref())?;
+            debug!(is_last = frame.is_last, "ASR response frame received");
             if let Some(text) = protocol::extract_text(frame.payload.as_ref())
                 && text != *final_text
             {

@@ -6,6 +6,7 @@ use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream, StreamConfig};
 use serde::Serialize;
 use tokio::sync::mpsc::UnboundedSender;
+use tracing::{error, info};
 
 pub const TARGET_SAMPLE_RATE: u32 = 16_000;
 
@@ -54,6 +55,14 @@ impl AudioCapture {
     pub fn start(selected_microphone: &str, sender: UnboundedSender<AudioEvent>) -> Result<Self> {
         let selected_microphone = selected_microphone.to_owned();
         let (stop_sender, stop_receiver) = std::sync::mpsc::channel();
+        info!(
+            microphone = if selected_microphone.is_empty() {
+                "system-default"
+            } else {
+                &selected_microphone
+            },
+            "starting microphone capture thread"
+        );
         thread::Builder::new()
             .name("voice-flow-microphone".to_owned())
             .spawn(move || {
@@ -64,6 +73,7 @@ impl AudioCapture {
                         drop(stream);
                     }
                     Err(error) => {
+                        error!(%error, "microphone thread failed");
                         let _ = sender.send(AudioEvent::Error(error.to_string()));
                     }
                 }
@@ -96,6 +106,9 @@ fn open_stream(selected_microphone: &str, sender: UnboundedSender<AudioEvent>) -
                 format!("selected microphone is not available: {selected_microphone}")
             })?
     };
+    let device_name = device
+        .name()
+        .unwrap_or_else(|_| "unknown microphone".to_owned());
     let supported = device
         .default_input_config()
         .context("failed to read the selected microphone format")?;
@@ -107,6 +120,14 @@ fn open_stream(selected_microphone: &str, sender: UnboundedSender<AudioEvent>) -
     if channels == 0 || source_rate == 0 {
         bail!("the selected microphone reported an invalid audio format");
     }
+    info!(
+        microphone = %device_name,
+        ?sample_format,
+        source_rate,
+        channels,
+        target_rate = TARGET_SAMPLE_RATE,
+        "microphone opened"
+    );
 
     let stream = match sample_format {
         SampleFormat::F32 => build_f32_stream(&device, &config, channels, source_rate, sender)?,
@@ -212,6 +233,7 @@ fn build_f32_stream(
                 process_input(data, channels, |sample| sample, &mut resampler, &sender);
             },
             move |error| {
+                tracing::error!(%error, "f32 microphone stream error");
                 let _ = error_sender.send(AudioEvent::Error(error.to_string()));
             },
             None,
@@ -241,6 +263,7 @@ fn build_i16_stream(
                 );
             },
             move |error| {
+                tracing::error!(%error, "i16 microphone stream error");
                 let _ = error_sender.send(AudioEvent::Error(error.to_string()));
             },
             None,
@@ -270,6 +293,7 @@ fn build_u16_stream(
                 );
             },
             move |error| {
+                tracing::error!(%error, "u16 microphone stream error");
                 let _ = error_sender.send(AudioEvent::Error(error.to_string()));
             },
             None,

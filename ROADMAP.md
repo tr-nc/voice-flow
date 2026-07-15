@@ -5,14 +5,14 @@
 - [x] macOS Tauri shell
 - [x] VolcEngine bidirectional streaming ASR
 - [x] live transcript ribbon
-- [x] hold-to-talk and toggle shortcuts
+- [x] hold-to-talk and toggle shortcuts with side-specific modifier keys
 - [x] selectable microphone
 - [x] active-cursor insertion
-- [x] optional DDC spoken-language smoothing, punctuation, and inverse-text normalization
+- [x] ASR punctuation and inverse-text normalization
+- [x] fixed-file and stdout diagnostic logging
 
 ## Next
 
-- [ ] semantic polish provider with a before/after preview and a raw-text fallback
 - [ ] macOS menu bar lifecycle and onboarding for permissions
 - [ ] reconnect and recover short network interruptions
 - [ ] credential storage in the macOS Keychain

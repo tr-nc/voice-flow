@@ -9,10 +9,10 @@ The interface uses a quiet, warm, writing-focused visual system rather than a hi
 - macOS runtime support today; Linux-facing boundaries are isolated for a later implementation.
 - VolcEngine WebSocket V3 bidirectional streaming ASR.
 - Legacy `APP ID + Access Token` authentication and current API-key-only authentication.
-- Global hold-to-talk and toggle shortcuts.
+- Global hold-to-talk and toggle shortcuts using any supported single key or key chord, including left/right modifier distinction.
 - Manual microphone selection, with a system-default option.
 - Live, non-focus-stealing transcript overlay.
-- Optional VolcEngine semantic smoothing (DDC) for filler words and disfluencies, plus punctuation, inverse-text normalization, and a replaceable transcript-processing boundary.
+- Raw streaming ASR output with VolcEngine punctuation and inverse-text normalization; no LLM polish in the MVP.
 - Automatic clipboard + paste insertion when dictation ends.
 - Credentials stored locally in the Tauri app config directory, never in this repository.
 
@@ -25,7 +25,7 @@ npm install
 npm run tauri dev
 ```
 
-On first use, macOS asks for microphone access. Automatic insertion also needs Accessibility permission for Voice Flow (or the terminal during development) under **System Settings → Privacy & Security → Accessibility**.
+On first use, macOS asks for microphone access. Global side-specific shortcut detection and automatic insertion also need Accessibility permission for Voice Flow (or the terminal during development) under **System Settings → Privacy & Security → Accessibility**.
 
 ## Credentials
 
@@ -41,14 +41,15 @@ The default ASR endpoint is `wss://openspeech.bytedance.com/api/v3/sauc/bigmodel
 - `src-tauri/src/audio.rs`: microphone capture and 16 kHz mono PCM resampling.
 - `src-tauri/src/asr/`: VolcEngine transport and binary protocol framing.
 - `src-tauri/src/controller.rs`: dictation lifecycle and UI events.
+- `src-tauri/src/shortcut.rs`: arbitrary key/chord polling with left/right modifier distinction.
+- `src-tauri/src/logging.rs`: identical stdout and fixed-file tracing output.
 - `src-tauri/src/platform/`: active-cursor insertion boundary; macOS is implemented, Linux is intentionally isolated.
-- `src-tauri/src/text.rs`: final transcript-processing boundary for future semantic polish providers.
 - `src-tauri/src/config.rs`: local settings and validation.
 - `src/`: framework-free TypeScript UI for the settings window and dictation ribbon.
 
 Provider policy (endpoint/resource ID), microphone, interaction mode, shortcut, and insertion behavior live in the settings model so future providers or Linux integrations do not require UI orchestration rewrites.
 
-The MVP's “口语整理” uses VolcEngine DDC semantic smoothing together with ASR punctuation, number normalization, and deterministic whitespace cleanup. Model-based rewriting beyond spoken-language cleanup is intentionally listed in [`ROADMAP.md`](ROADMAP.md) instead of being presented as complete without a model provider and explicit privacy policy.
+Runtime logs are written to stdout and `~/Library/Logs/dev.voiceflow.desktop/voice-flow.log` with identical content. Transcript text, credentials, and raw audio are never logged. See [`AGENTS.md`](AGENTS.md) for diagnostic commands.
 
 Licensed under [MIT](LICENSE). See [CONTRIBUTING.md](CONTRIBUTING.md) for project boundaries and validation steps.
 

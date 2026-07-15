@@ -5,17 +5,19 @@ use std::time::Duration;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition};
 use tokio::sync::oneshot;
+use tracing::{debug, error, info, warn};
 
 use crate::asr::{self, StreamEvent};
 use crate::config::{AppConfig, InteractionMode};
 use crate::platform;
-use crate::text;
+use crate::shortcut::ShortcutBinding;
 
 const RUNTIME_EVENT: &str = "voice-flow://runtime";
 const LEVEL_EVENT: &str = "voice-flow://level";
 
 pub struct AppState {
     pub config: Mutex<AppConfig>,
+    shortcut: Mutex<ShortcutBinding>,
     session: Mutex<Option<ActiveSession>>,
     runtime: Mutex<RuntimeSnapshot>,
     shortcut_down: AtomicBool,
@@ -25,6 +27,10 @@ impl Default for AppState {
     fn default() -> Self {
         Self {
             config: Mutex::new(AppConfig::default()),
+            shortcut: Mutex::new(
+                ShortcutBinding::parse(crate::config::DEFAULT_SHORTCUT)
+                    .expect("default shortcut must be valid"),
+            ),
             session: Mutex::new(None),
             runtime: Mutex::new(RuntimeSnapshot::idle()),
             shortcut_down: AtomicBool::new(false),
@@ -64,8 +70,14 @@ impl AppState {
     }
 
     pub fn replace_config(&self, config: AppConfig) {
+        *lock(&self.shortcut) = ShortcutBinding::parse(&config.shortcut)
+            .expect("validated config must contain a valid shortcut");
         *lock(&self.config) = config;
         self.shortcut_down.store(false, Ordering::Release);
+    }
+
+    pub fn shortcut_binding(&self) -> ShortcutBinding {
+        lock(&self.shortcut).clone()
     }
 
     pub fn runtime_snapshot(&self) -> RuntimeSnapshot {
@@ -93,11 +105,18 @@ pub fn begin(app: &AppHandle) -> Result<(), String> {
     let state = app.state::<AppState>();
     let config = state.current_config();
     config.validate().map_err(|error| error.to_string())?;
+    info!(
+        mode = ?config.interaction_mode,
+        microphone = if config.microphone.is_empty() { "system-default" } else { &config.microphone },
+        auto_insert = config.auto_insert,
+        "dictation session starting"
+    );
 
     let (stop_sender, stop_receiver) = oneshot::channel();
     {
         let mut session = lock(&state.session);
         if session.is_some() {
+            debug!("ignored duplicate dictation start request");
             return Ok(());
         }
         *session = Some(ActiveSession {
@@ -107,6 +126,7 @@ pub fn begin(app: &AppHandle) -> Result<(), String> {
 
     if let Err(error) = show_dictation_window(app) {
         *lock(&state.session) = None;
+        error!(%error, "failed to show dictation window");
         return Err(error);
     }
 
@@ -131,12 +151,14 @@ pub fn stop(app: &AppHandle) -> Result<(), String> {
     let sender = {
         let mut session = lock(&state.session);
         let Some(active) = session.as_mut() else {
+            debug!("ignored dictation stop request because no session is active");
             return Ok(());
         };
         active.stop_sender.take()
     };
 
     if let Some(sender) = sender {
+        info!("dictation stop signal sent");
         let _ = sender.send(());
         let current = state.runtime_snapshot();
         publish_runtime(
@@ -196,7 +218,11 @@ async fn run_session(app: AppHandle, config: AppConfig, stop_receiver: oneshot::
 
     match result {
         Ok(text) if !text.trim().is_empty() => {
-            let text = text::process_final(&text);
+            let text = text.trim().to_owned();
+            info!(
+                characters = text.chars().count(),
+                "final ASR transcript received"
+            );
             publish_runtime(
                 &app,
                 RuntimeSnapshot {
@@ -222,10 +248,22 @@ async fn run_session(app: AppHandle, config: AppConfig, stop_receiver: oneshot::
             .await;
 
             let message = match insertion {
-                Ok(Ok(())) if config.auto_insert => "Inserted at the active cursor".to_owned(),
-                Ok(Ok(())) => "Copied to the clipboard".to_owned(),
-                Ok(Err(error)) => error.to_string(),
-                Err(error) => format!("text insertion task failed: {error}"),
+                Ok(Ok(())) if config.auto_insert => {
+                    info!("transcript inserted at active cursor");
+                    "Inserted at the active cursor".to_owned()
+                }
+                Ok(Ok(())) => {
+                    info!("transcript copied to clipboard");
+                    "Copied to the clipboard".to_owned()
+                }
+                Ok(Err(error)) => {
+                    warn!(%error, "transcript insertion failed after ASR completed");
+                    error.to_string()
+                }
+                Err(error) => {
+                    error!(%error, "text insertion worker failed");
+                    format!("text insertion task failed: {error}")
+                }
             };
             publish_runtime(
                 &app,
@@ -238,6 +276,7 @@ async fn run_session(app: AppHandle, config: AppConfig, stop_receiver: oneshot::
             finish_session_after(&app, Duration::from_millis(1_100)).await;
         }
         Ok(_) => {
+            info!("ASR session completed without detected speech");
             publish_runtime(
                 &app,
                 RuntimeSnapshot {
@@ -249,6 +288,7 @@ async fn run_session(app: AppHandle, config: AppConfig, stop_receiver: oneshot::
             finish_session_after(&app, Duration::from_millis(1_100)).await;
         }
         Err(error) => {
+            error!(%error, "dictation session failed");
             publish_runtime(
                 &app,
                 RuntimeSnapshot {
@@ -266,6 +306,7 @@ fn handle_stream_event(app: &AppHandle, event: StreamEvent) {
     let state = app.state::<AppState>();
     match event {
         StreamEvent::Connected => {
+            info!("ASR stream connected");
             let current = state.runtime_snapshot();
             publish_runtime(
                 app,
@@ -277,6 +318,10 @@ fn handle_stream_event(app: &AppHandle, event: StreamEvent) {
             );
         }
         StreamEvent::Transcript(transcript) => {
+            debug!(
+                characters = transcript.chars().count(),
+                "partial ASR transcript updated"
+            );
             publish_runtime(
                 app,
                 RuntimeSnapshot {
@@ -294,6 +339,7 @@ fn handle_stream_event(app: &AppHandle, event: StreamEvent) {
 
 async fn finish_session_after(app: &AppHandle, delay: Duration) {
     tokio::time::sleep(delay).await;
+    debug!("dictation session returned to idle");
     *lock(&app.state::<AppState>().session) = None;
     hide_dictation_window(app);
     publish_runtime(app, RuntimeSnapshot::idle());

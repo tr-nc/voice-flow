@@ -19,7 +19,6 @@ type AppConfig = {
   shortcut: string;
   interaction_mode: InteractionMode;
   microphone: string;
-  polish: boolean;
   auto_insert: boolean;
   endpoint: string;
   resource_id: string;
@@ -123,8 +122,8 @@ async function mountSettings(root: HTMLDivElement) {
               <div class="field shortcut-field">
                 <span>全局快捷键</span>
                 <button id="shortcut-capture" class="shortcut-capture" type="button">
-                  <kbd id="shortcut-value">⌘ ⇧ Space</kbd>
-                  <small>点击后按下新组合键</small>
+                  <kbd id="shortcut-value">L⌘  L⇧  Space</kbd>
+                  <small>支持单键并区分左右</small>
                 </button>
               </div>
             </div>
@@ -136,7 +135,7 @@ async function mountSettings(root: HTMLDivElement) {
                 <span class="mode-icon hold-icon" aria-hidden="true"></span>
                 <span>
                   <strong>按住说话</strong>
-                  <small>按下开始，松开即整理并插入</small>
+                  <small>按下开始，松开即停止并插入</small>
                 </span>
                 <b>默认</b>
               </label>
@@ -152,19 +151,6 @@ async function mountSettings(root: HTMLDivElement) {
           </section>
 
           <section class="panel behavior-panel">
-            <div class="behavior-row">
-              <div class="behavior-copy">
-                <span class="polish-spark" aria-hidden="true">✦</span>
-                <div>
-                  <strong>口语整理</strong>
-                  <p>流式文字立即上屏，同时整理语气词、重复、停顿，并规范标点和数字。</p>
-                </div>
-              </div>
-              <label class="switch">
-                <input id="polish" type="checkbox" checked />
-                <span></span>
-              </label>
-            </div>
             <div class="behavior-row">
               <div class="behavior-copy">
                 <span class="cursor-symbol" aria-hidden="true"></span>
@@ -218,7 +204,6 @@ async function mountSettings(root: HTMLDivElement) {
   const microphone = element<HTMLSelectElement>("#microphone");
   const shortcutCapture = element<HTMLButtonElement>("#shortcut-capture");
   const shortcutValue = element<HTMLElement>("#shortcut-value");
-  const polish = element<HTMLInputElement>("#polish");
   const autoInsert = element<HTMLInputElement>("#auto-insert");
   const endpoint = element<HTMLInputElement>("#endpoint");
   const resourceId = element<HTMLInputElement>("#resource-id");
@@ -233,6 +218,7 @@ async function mountSettings(root: HTMLDivElement) {
   let config: AppConfig;
   let runtime: RuntimeSnapshot;
   let capturingShortcut = false;
+  let capturedShortcutKeys: string[] = [];
   let active = false;
   let unlistenRuntime: UnlistenFn | undefined;
 
@@ -271,27 +257,36 @@ async function mountSettings(root: HTMLDivElement) {
   });
 
   shortcutCapture.addEventListener("click", () => {
+    if (capturingShortcut) {
+      finishShortcutCapture(config.shortcut);
+      return;
+    }
     capturingShortcut = true;
+    capturedShortcutKeys = [];
     shortcutCapture.classList.add("is-capturing");
-    shortcutValue.textContent = "请按组合键…";
-    shortcutCapture.querySelector("small")!.textContent = "Esc 取消";
+    shortcutValue.textContent = "请按键…";
+    shortcutCapture.querySelector("small")!.textContent = "松开完成，再次点击取消";
   });
 
   window.addEventListener("keydown", (event) => {
     if (!capturingShortcut) return;
     event.preventDefault();
     event.stopPropagation();
-    if (event.key === "Escape") {
-      finishShortcutCapture(config.shortcut);
+    const key = shortcutKeyFromCode(event.code);
+    if (!key) {
+      shortcutValue.textContent = `暂不支持 ${event.code}`;
       return;
     }
-    const shortcut = shortcutFromKeyboardEvent(event);
-    if (!shortcut) {
-      shortcutValue.textContent = "需要修饰键 + 按键";
-      return;
-    }
-    config.shortcut = shortcut;
-    finishShortcutCapture(shortcut);
+    if (!capturedShortcutKeys.includes(key)) capturedShortcutKeys.push(key);
+    shortcutValue.textContent = prettyShortcut(capturedShortcutKeys.join("+"));
+  });
+
+  window.addEventListener("keyup", (event) => {
+    if (!capturingShortcut || capturedShortcutKeys.length === 0) return;
+    event.preventDefault();
+    event.stopPropagation();
+    config.shortcut = capturedShortcutKeys.join("+");
+    finishShortcutCapture(config.shortcut);
   });
 
   saveButton.addEventListener("click", async () => {
@@ -325,7 +320,6 @@ async function mountSettings(root: HTMLDivElement) {
     secretKey.value = next.secret_key;
     microphone.value = next.microphone;
     shortcutValue.textContent = prettyShortcut(next.shortcut);
-    polish.checked = next.polish;
     autoInsert.checked = next.auto_insert;
     endpoint.value = next.endpoint;
     resourceId.value = next.resource_id;
@@ -342,7 +336,6 @@ async function mountSettings(root: HTMLDivElement) {
       shortcut: config.shortcut,
       interaction_mode: interactionMode ?? "hold",
       microphone: microphone.value,
-      polish: polish.checked,
       auto_insert: autoInsert.checked,
       endpoint: endpoint.value.trim(),
       resource_id: resourceId.value.trim(),
@@ -370,7 +363,7 @@ async function mountSettings(root: HTMLDivElement) {
     capturingShortcut = false;
     shortcutCapture.classList.remove("is-capturing");
     shortcutValue.textContent = prettyShortcut(shortcut);
-    shortcutCapture.querySelector("small")!.textContent = "点击后按下新组合键";
+    shortcutCapture.querySelector("small")!.textContent = "支持单键并区分左右";
   }
 
   function showSaveMessage(message: string, isError = false) {
@@ -461,33 +454,71 @@ function updateModeCards() {
   });
 }
 
-function shortcutFromKeyboardEvent(event: KeyboardEvent): string | undefined {
-  const modifiers: string[] = [];
-  if (event.metaKey || event.ctrlKey) modifiers.push("CommandOrControl");
-  if (event.altKey) modifiers.push("Alt");
-  if (event.shiftKey) modifiers.push("Shift");
-  if (modifiers.length === 0) return undefined;
-
-  let key: string | undefined;
-  if (event.code.startsWith("Key")) key = event.code.slice(3);
-  else if (event.code.startsWith("Digit")) key = event.code.slice(5);
-  else if (event.code === "Space") key = "Space";
-  else if (event.code === "Enter") key = "Enter";
-  else if (event.code === "Tab") key = "Tab";
-  else if (event.code.startsWith("Arrow")) key = event.code;
-  else if (/^F\d{1,2}$/.test(event.code)) key = event.code;
-  if (!key) return undefined;
-  return [...modifiers, key].join("+");
+function shortcutKeyFromCode(code: string): string | undefined {
+  const aliases: Record<string, string> = {
+    MetaLeft: "Command",
+    MetaRight: "RCommand",
+    ControlLeft: "LControl",
+    ControlRight: "RControl",
+    ShiftLeft: "LShift",
+    ShiftRight: "RShift",
+    AltLeft: "LOption",
+    AltRight: "ROption",
+    ArrowUp: "Up",
+    ArrowDown: "Down",
+    ArrowLeft: "Left",
+    ArrowRight: "Right",
+    Backquote: "Grave",
+    BracketLeft: "LeftBracket",
+    BracketRight: "RightBracket",
+    Backslash: "BackSlash",
+    Quote: "Apostrophe",
+    Period: "Dot",
+    NumpadEqual: "NumpadEquals",
+  };
+  if (aliases[code]) return aliases[code];
+  if (code.startsWith("Key") && code.length === 4) return code.slice(3);
+  if (code.startsWith("Digit") && code.length === 6) return `Key${code.slice(5)}`;
+  if (/^F(?:[1-9]|1\d|20)$/.test(code)) return code;
+  const supported = new Set([
+    "Escape", "Space", "Enter", "Backspace", "CapsLock", "Tab", "Home", "End", "PageUp", "PageDown", "Insert", "Delete",
+    "Numpad0", "Numpad1", "Numpad2", "Numpad3", "Numpad4", "Numpad5", "Numpad6", "Numpad7", "Numpad8", "Numpad9",
+    "NumpadSubtract", "NumpadAdd", "NumpadDivide", "NumpadMultiply", "NumpadEnter", "NumpadDecimal",
+    "Minus", "Equal", "Semicolon", "Comma", "Slash",
+  ]);
+  return supported.has(code) ? code : undefined;
 }
 
 function prettyShortcut(shortcut: string): string {
+  const labels: Record<string, string> = {
+    Command: "L⌘",
+    RCommand: "R⌘",
+    LControl: "L⌃",
+    RControl: "R⌃",
+    LShift: "L⇧",
+    RShift: "R⇧",
+    LOption: "L⌥",
+    ROption: "R⌥",
+    Up: "↑",
+    Down: "↓",
+    Left: "←",
+    Right: "→",
+    Space: "Space",
+    Escape: "Esc",
+    Key0: "0",
+    Key1: "1",
+    Key2: "2",
+    Key3: "3",
+    Key4: "4",
+    Key5: "5",
+    Key6: "6",
+    Key7: "7",
+    Key8: "8",
+    Key9: "9",
+  };
   return shortcut
-    .replace("CommandOrControl", navigator.platform.includes("Mac") ? "⌘" : "Ctrl")
-    .replace("Command", "⌘")
-    .replace("Control", "Ctrl")
-    .replace("Shift", "⇧")
-    .replace("Alt", navigator.platform.includes("Mac") ? "⌥" : "Alt")
     .split("+")
+    .map((key) => labels[key] ?? key)
     .join("  ");
 }
 

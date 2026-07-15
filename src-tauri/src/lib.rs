@@ -2,11 +2,12 @@ mod asr;
 mod audio;
 mod config;
 mod controller;
+mod logging;
 mod platform;
-mod text;
+mod shortcut;
 
 use tauri::{AppHandle, Manager, State};
-use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
+use tracing::{debug, error, info};
 
 use audio::Microphone;
 use config::{AppConfig, InteractionMode};
@@ -14,6 +15,7 @@ use controller::{AppState, RuntimeSnapshot};
 
 #[tauri::command]
 fn get_config(state: State<'_, AppState>) -> AppConfig {
+    debug!("configuration requested by UI");
     state.current_config()
 }
 
@@ -24,7 +26,9 @@ fn get_runtime(state: State<'_, AppState>) -> RuntimeSnapshot {
 
 #[tauri::command]
 fn list_microphones() -> Result<Vec<Microphone>, String> {
-    audio::list_microphones().map_err(|error| error.to_string())
+    let microphones = audio::list_microphones().map_err(|error| error.to_string())?;
+    info!(count = microphones.len(), "microphones enumerated");
+    Ok(microphones)
 }
 
 #[tauri::command]
@@ -39,45 +43,43 @@ fn save_config(
 
     let config = config.normalized();
     config.validate().map_err(|error| error.to_string())?;
-    let previous = state.current_config();
-
-    app.global_shortcut()
-        .unregister_all()
-        .map_err(|error| format!("failed to release the previous shortcut: {error}"))?;
-    if let Err(error) = app.global_shortcut().register(config.shortcut.as_str()) {
-        let _ = app.global_shortcut().register(previous.shortcut.as_str());
-        return Err(format!("failed to register {}: {error}", config.shortcut));
-    }
-
-    if let Err(error) = config::save(&app, &config) {
-        let _ = app.global_shortcut().unregister_all();
-        let _ = app.global_shortcut().register(previous.shortcut.as_str());
-        return Err(error.to_string());
-    }
-
+    config::save(&app, &config).map_err(|error| error.to_string())?;
     state.replace_config(config.clone());
+    info!(
+        shortcut = %config.shortcut,
+        mode = ?config.interaction_mode,
+        microphone = if config.microphone.is_empty() { "system-default" } else { &config.microphone },
+        auth_mode = if config.app_id.is_empty() { "api-key" } else { "legacy-app-id" },
+        auto_insert = config.auto_insert,
+        "configuration saved"
+    );
     Ok(config)
 }
 
 #[tauri::command]
 fn start_dictation(app: AppHandle) -> Result<(), String> {
+    info!(source = "ui", "dictation start requested");
     controller::begin(&app)
 }
 
 #[tauri::command]
 fn stop_dictation(app: AppHandle) -> Result<(), String> {
+    info!(source = "ui", "dictation stop requested");
     controller::stop(&app)
 }
 
-fn handle_shortcut(app: &AppHandle, shortcut_state: ShortcutState) {
+fn handle_shortcut(app: &AppHandle, shortcut_event: shortcut::ShortcutEvent) {
     let state = app.state::<AppState>();
-    let result = match shortcut_state {
-        ShortcutState::Pressed if state.mark_shortcut_pressed() => match state.interaction_mode() {
-            InteractionMode::Hold => controller::begin(app),
-            InteractionMode::Toggle => controller::toggle(app),
-        },
-        ShortcutState::Pressed => Ok(()),
-        ShortcutState::Released => {
+    debug!(event = ?shortcut_event, mode = ?state.interaction_mode(), "shortcut state changed");
+    let result = match shortcut_event {
+        shortcut::ShortcutEvent::Pressed if state.mark_shortcut_pressed() => {
+            match state.interaction_mode() {
+                InteractionMode::Hold => controller::begin(app),
+                InteractionMode::Toggle => controller::toggle(app),
+            }
+        }
+        shortcut::ShortcutEvent::Pressed => Ok(()),
+        shortcut::ShortcutEvent::Released => {
             state.mark_shortcut_released();
             match state.interaction_mode() {
                 InteractionMode::Hold => controller::stop(app),
@@ -87,6 +89,7 @@ fn handle_shortcut(app: &AppHandle, shortcut_state: ShortcutState) {
     };
 
     if let Err(error) = result {
+        error!(%error, "shortcut action failed");
         controller::report_shortcut_error(app, error);
     }
 }
@@ -95,17 +98,19 @@ fn handle_shortcut(app: &AppHandle, shortcut_state: ShortcutState) {
 pub fn run() {
     tauri::Builder::default()
         .manage(AppState::default())
-        .plugin(
-            tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(|app, _shortcut, event| {
-                    handle_shortcut(app, event.state());
-                })
-                .build(),
-        )
         .setup(|app| {
+            let log_path = logging::init(app.handle())?;
             let config = config::load(app.handle())?;
-            app.global_shortcut().register(config.shortcut.as_str())?;
+            info!(
+                version = env!("CARGO_PKG_VERSION"),
+                log_path = %log_path.display(),
+                shortcut = %config.shortcut,
+                auth_mode = if config.app_id.is_empty() { "api-key" } else { "legacy-app-id" },
+                has_credential = !config.secret_key.is_empty(),
+                "Voice Flow starting"
+            );
             app.state::<AppState>().replace_config(config);
+            shortcut::start_monitor(app.handle().clone(), handle_shortcut)?;
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
