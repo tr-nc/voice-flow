@@ -25,7 +25,7 @@ tail -n 300 "$HOME/Library/Logs/dev.voiceflow.desktop/voice-flow.log"
 rg -n "ERROR|WARN|ASR|microphone|shortcut" "$HOME/Library/Logs/dev.voiceflow.desktop/voice-flow.log"
 ```
 
-Never log credentials, transcript text, or raw audio. Logging transcript lengths, packet sizes, timings, state transitions, device names, and non-secret provider metadata is allowed.
+Never log credentials, transcript text, or raw audio. Logging transcript lengths, packet sizes, timings, state transitions, device names, and non-secret provider metadata is allowed. Human-reviewed expected transcripts and user-approved audio under `examples/benchmarks/` are test fixtures rather than runtime logs; benchmark tools may print recognition results to their invoking terminal but must not write them to the application log.
 
 Local settings, including credentials, are stored at:
 
@@ -43,6 +43,7 @@ Run from the repository root:
 npm run build
 cargo fmt --manifest-path src-tauri/Cargo.toml --check
 cargo test --manifest-path src-tauri/Cargo.toml
+cargo test --manifest-path src-tauri/Cargo.toml --example asr_benchmark
 cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 npx tauri build --debug --no-bundle
 ```

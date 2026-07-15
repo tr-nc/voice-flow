@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "id": "mandarin-basic-001",
+  "audio": "audio.m4a",
+  "language": "zh-CN",
+  "expected_text": "我来简单测试一下，就是这个的声音效果。",
+  "source": {
+    "format": "m4a/aac",
+    "sample_rate": 48000,
+    "channels": 2,
+    "duration_ms": 4075,
+    "sha256": "520c29ec48764cdeeede632d238332a196f5aca5311a42c024fa5dfc5c456e2b"
+  }
+}
