@@ -2,7 +2,7 @@
 
 A lightweight, open-source Tauri + Rust app for system-wide, real-time voice input. It deliberately does not replace or bundle itself with an input method: keep the keyboard and typing habits you already use, hold a shortcut, watch the transcript appear, and release to insert at the active cursor.
 
-The interface uses a quiet, warm, writing-focused visual system rather than a high-tech dashboard. The floating ribbon stays visible without taking focus from the app receiving text.
+The interface uses a quiet, warm, writing-focused visual system rather than a high-tech dashboard. The floating overlay contains only recognized text, accepts no input, and never takes focus from the app receiving text.
 
 ## MVP scope
 
@@ -11,7 +11,7 @@ The interface uses a quiet, warm, writing-focused visual system rather than a hi
 - Legacy `APP ID + Access Token` authentication and current API-key-only authentication.
 - Global hold-to-talk and toggle shortcuts using any supported single key or key chord, including left/right modifier distinction.
 - Manual microphone selection, with a system-default option.
-- Live, non-focus-stealing transcript overlay.
+- Live, click-through transcript-only overlay with no controls or decorative chrome.
 - Raw streaming ASR output with VolcEngine punctuation and inverse-text normalization; no LLM polish in the MVP.
 - Automatic clipboard + paste insertion when dictation ends.
 - Credentials stored locally in the Tauri app config directory, never in this repository.
@@ -45,7 +45,7 @@ The default ASR endpoint is `wss://openspeech.bytedance.com/api/v3/sauc/bigmodel
 - `src-tauri/src/logging.rs`: identical stdout and fixed-file tracing output.
 - `src-tauri/src/platform/`: active-cursor insertion boundary; macOS is implemented, Linux is intentionally isolated.
 - `src-tauri/src/config.rs`: local settings and validation.
-- `src/`: framework-free TypeScript UI for the settings window and dictation ribbon.
+- `src/`: framework-free TypeScript UI for the settings window and transcript-only overlay.
 
 Provider policy (endpoint/resource ID), microphone, interaction mode, shortcut, and insertion behavior live in the settings model so future providers or Linux integrations do not require UI orchestration rewrites.
 

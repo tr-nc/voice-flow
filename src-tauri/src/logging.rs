@@ -94,6 +94,10 @@ pub fn init(app: &AppHandle) -> Result<PathBuf> {
         .try_init()
         .map_err(|error| anyhow::anyhow!("failed to initialize logging: {error}"))?;
 
+    std::panic::set_hook(Box::new(|panic| {
+        tracing::error!(panic = %panic, "process panic");
+    }));
+
     info!(
         log_path = %path.display(),
         max_log_bytes = MAX_LOG_BYTES,

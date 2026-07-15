@@ -36,10 +36,6 @@ type RuntimeSnapshot = {
   message: string;
 };
 
-type LevelPayload = {
-  level: number;
-};
-
 const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) throw new Error("Missing #app root");
 
@@ -374,62 +370,16 @@ async function mountSettings(root: HTMLDivElement) {
 
 async function mountDictationOverlay(root: HTMLDivElement) {
   document.body.className = "overlay-body";
-  root.innerHTML = `
-    <section class="dictation-ribbon" data-phase="idle">
-      <div class="ribbon-signal" aria-hidden="true">
-        <div class="mic-orbit"><span></span></div>
-        <div class="level-bars">
-          ${Array.from({ length: 11 }, (_, index) => `<i data-bar="${index}"></i>`).join("")}
-        </div>
-      </div>
-      <div class="ribbon-copy">
-        <div class="ribbon-meta">
-          <span id="ribbon-phase">正在连接</span>
-          <span class="live-mark"><i></i> LIVE</span>
-        </div>
-        <p id="ribbon-transcript">准备好后直接开始说话…</p>
-        <small id="ribbon-message">松开快捷键即可插入</small>
-      </div>
-      <div class="ribbon-key" id="ribbon-key">HOLD</div>
-    </section>
-  `;
+  root.innerHTML = `<p class="dictation-text" aria-live="polite"></p>`;
 
-  const ribbon = element<HTMLElement>(".dictation-ribbon");
-  const transcript = element<HTMLElement>("#ribbon-transcript");
-  const phase = element<HTMLElement>("#ribbon-phase");
-  const message = element<HTMLElement>("#ribbon-message");
-  const key = element<HTMLElement>("#ribbon-key");
-  const bars = Array.from(document.querySelectorAll<HTMLElement>("[data-bar]"));
-
-  const config = await invoke<AppConfig>("get_config").catch(() => undefined);
-  key.textContent = config?.interaction_mode === "toggle" ? "TOGGLE" : "HOLD";
-
+  const transcript = element<HTMLElement>(".dictation-text");
   const applyRuntime = (next: RuntimeSnapshot) => {
-    ribbon.dataset.phase = next.phase;
-    phase.textContent = phaseLabel(next.phase);
-    message.textContent = next.message;
-    if (next.transcript) {
-      transcript.textContent = next.transcript;
-      transcript.scrollTop = transcript.scrollHeight;
-    } else if (next.phase === "error") {
-      transcript.textContent = "无法开始语音输入";
-    } else if (next.phase === "connecting") {
-      transcript.textContent = "准备好后直接开始说话…";
-    }
+    transcript.textContent = next.transcript;
   };
 
   const runtime = await invoke<RuntimeSnapshot>("get_runtime").catch(() => undefined);
   if (runtime) applyRuntime(runtime);
-
   await listen<RuntimeSnapshot>("voice-flow://runtime", ({ payload }) => applyRuntime(payload));
-  await listen<LevelPayload>("voice-flow://level", ({ payload }) => {
-    const energy = Math.min(1, Math.max(0.05, payload.level * 5.5));
-    bars.forEach((bar, index) => {
-      const center = 1 - Math.abs(index - (bars.length - 1) / 2) / (bars.length / 2);
-      const ripple = 0.58 + Math.sin(index * 1.7 + performance.now() / 150) * 0.18;
-      bar.style.height = `${6 + energy * center * ripple * 38}px`;
-    });
-  });
 }
 
 function populateMicrophones(select: HTMLSelectElement, microphones: Microphone[], selected: string) {

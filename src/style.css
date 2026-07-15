@@ -130,8 +130,7 @@ summary:focus-visible {
   background: var(--accent);
 }
 
-.preview-meta,
-.ribbon-meta {
+.preview-meta {
   margin: 0;
   font-family: var(--mono);
   font-size: 8px;
@@ -818,11 +817,13 @@ summary:focus-visible {
   transform: none;
 }
 
-/* The non-focus-stealing live transcript window. */
+/* Click-through overlay: recognized text only. */
 .overlay-body {
   min-height: 100vh;
   overflow: hidden;
   background: transparent;
+  pointer-events: none;
+  user-select: none;
 }
 
 .overlay-body #app {
@@ -830,179 +831,25 @@ summary:focus-visible {
   min-height: 100vh;
   align-items: center;
   justify-content: center;
-  padding: 12px;
+  padding: 8px 18px;
 }
 
-.dictation-ribbon {
-  display: grid;
-  grid-template-columns: 112px minmax(0, 1fr) 56px;
-  width: 100%;
-  min-height: 154px;
+.dictation-text {
+  max-height: 3.2em;
+  margin: 0;
   overflow: hidden;
-  border: 1px solid #d7d2ca;
-  border-radius: 19px;
-  background: rgb(251 250 247 / 97%);
-  box-shadow: 0 18px 55px rgb(55 48 40 / 20%);
-  color: var(--ink);
-  backdrop-filter: blur(20px);
+  color: #2f2b27;
+  font-size: 20px;
+  font-weight: 620;
+  line-height: 1.6;
+  text-align: center;
+  text-shadow:
+    0 1px 2px rgb(255 255 255 / 100%),
+    0 2px 12px rgb(255 255 255 / 95%);
 }
 
-.ribbon-signal {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 14px;
-  border-right: 1px solid #e2ded7;
-  background: #f4f1eb;
-}
-
-.mic-orbit {
-  position: relative;
-  display: grid;
-  width: 40px;
-  height: 40px;
-  place-items: center;
-  border: 1px solid #c9c3ba;
-  border-radius: 50%;
-}
-
-.mic-orbit span {
-  position: relative;
-  width: 9px;
-  height: 17px;
-  border: 1.5px solid #79736b;
-  border-radius: 7px;
-}
-
-.mic-orbit span::after {
-  position: absolute;
-  bottom: -7px;
-  left: -6px;
-  width: 18px;
-  height: 8px;
-  border: solid #79736b;
-  border-width: 0 0 1.5px;
-  border-radius: 0 0 9px 9px;
-  content: "";
-}
-
-.dictation-ribbon[data-phase="listening"] .mic-orbit {
-  border-color: #d69881;
-  animation: orbit-pulse 1.3s ease-out infinite;
-}
-
-.dictation-ribbon[data-phase="listening"] .mic-orbit span,
-.dictation-ribbon[data-phase="listening"] .mic-orbit span::after {
-  border-color: var(--accent);
-}
-
-@keyframes orbit-pulse {
-  0% {
-    box-shadow: 0 0 0 0 rgb(200 102 70 / 16%);
-  }
-  75%,
-  100% {
-    box-shadow: 0 0 0 10px rgb(200 102 70 / 0%);
-  }
-}
-
-.level-bars {
-  display: flex;
-  height: 28px;
-  align-items: center;
-  justify-content: center;
-  gap: 3px;
-}
-
-.level-bars i {
-  width: 2px;
-  height: 6px;
-  border-radius: 2px;
-  background: #aaa49b;
-  transition: height 70ms linear;
-}
-
-.dictation-ribbon[data-phase="listening"] .level-bars i:nth-child(3n) {
-  background: #cc7659;
-}
-
-.ribbon-copy {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  justify-content: center;
-  padding: 19px 22px;
-}
-
-.ribbon-meta {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  color: #8d877e;
-}
-
-.live-mark {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  color: #9b958d;
-}
-
-.live-mark i {
-  width: 5px;
-  height: 5px;
-  border-radius: 50%;
-  background: #aaa49b;
-}
-
-.dictation-ribbon[data-phase="listening"] .live-mark {
-  color: #a8583e;
-}
-
-.dictation-ribbon[data-phase="listening"] .live-mark i {
-  background: var(--accent);
-}
-
-.ribbon-copy p {
-  max-height: 55px;
-  margin: 11px 0 7px;
-  overflow: hidden auto;
-  color: #36322e;
-  font-size: 15px;
-  font-weight: 510;
-  line-height: 1.65;
-  letter-spacing: -0.015em;
-  scrollbar-width: none;
-}
-
-.ribbon-copy p::-webkit-scrollbar {
-  display: none;
-}
-
-.ribbon-copy small {
-  color: #918b82;
-  font-size: 9px;
-}
-
-.dictation-ribbon[data-phase="error"] .ribbon-copy small {
-  color: #ac514c;
-}
-
-.dictation-ribbon[data-phase="complete"] .ribbon-copy small {
-  color: #66755f;
-}
-
-.ribbon-key {
-  display: grid;
-  place-items: center;
-  border-left: 1px solid #e2ded7;
-  color: #99938b;
-  font-family: var(--mono);
-  font-size: 7px;
-  font-weight: 650;
-  letter-spacing: 0.1em;
-  writing-mode: vertical-rl;
+.dictation-text:empty {
+  visibility: hidden;
 }
 
 @media (prefers-reduced-motion: reduce) {

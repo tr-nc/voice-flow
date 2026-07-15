@@ -16,7 +16,7 @@ impl TextInjector for MacOsTextInjector {
             .set_text(text.to_owned())
             .context("failed to copy the transcript")?;
 
-        // The dictation ribbon is non-focusable, so the user's target application
+        // The transcript overlay is non-focusable, so the user's target application
         // remains frontmost. A short delay gives the pasteboard time to publish.
         thread::sleep(Duration::from_millis(70));
         let output = Command::new("osascript")

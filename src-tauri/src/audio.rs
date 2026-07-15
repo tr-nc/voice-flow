@@ -38,7 +38,6 @@ pub fn list_microphones() -> Result<Vec<Microphone>> {
 #[derive(Debug)]
 pub struct AudioChunk {
     pub samples: Vec<i16>,
-    pub level: f32,
 }
 
 #[derive(Debug)]
@@ -205,16 +204,13 @@ fn process_input<T>(
     let expected_output = (frame_count * TARGET_SAMPLE_RATE as usize)
         .div_ceil((resampler.step * TARGET_SAMPLE_RATE as f64) as usize);
     let mut samples = Vec::with_capacity(expected_output.max(1));
-    let mut square_sum = 0.0_f32;
 
     for frame in data.chunks_exact(channels) {
         let mono = frame.iter().map(|sample| convert(*sample)).sum::<f32>() / channels as f32;
-        square_sum += mono * mono;
         resampler.push(mono, &mut samples);
     }
 
-    let level = (square_sum / frame_count as f32).sqrt().clamp(0.0, 1.0);
-    let _ = sender.send(AudioEvent::Data(AudioChunk { samples, level }));
+    let _ = sender.send(AudioEvent::Data(AudioChunk { samples }));
 }
 
 fn build_f32_stream(

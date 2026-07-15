@@ -11,22 +11,31 @@ use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::protocol::Message;
-use tracing::{debug, info};
+use tracing::{debug, info, warn};
 use uuid::Uuid;
 
 use crate::audio::{AudioCapture, AudioEvent, TARGET_SAMPLE_RATE};
 use crate::config::AppConfig;
 
 const AUDIO_PACKET_SAMPLES: usize = 3_200;
-const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
-const FINAL_RESPONSE_TIMEOUT: Duration = Duration::from_secs(12);
-const LEVEL_EVENT_INTERVAL: Duration = Duration::from_millis(50);
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const SOCKET_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+const FINAL_RESPONSE_TIMEOUT: Duration = Duration::from_secs(6);
 
 #[derive(Debug)]
 pub enum StreamEvent {
     Connected,
     Transcript(String),
-    Level(f32),
+}
+
+pub fn install_tls_provider() -> Result<()> {
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        rustls::crypto::ring::default_provider()
+            .install_default()
+            .map_err(|_| anyhow::anyhow!("failed to install the rustls ring crypto provider"))?;
+    }
+    info!(provider = "ring", "TLS crypto provider ready");
+    Ok(())
 }
 
 pub async fn recognize(
@@ -42,9 +51,7 @@ pub async fn recognize(
         "preparing streaming ASR session"
     );
 
-    let (audio_sender, mut audio_receiver) = mpsc::unbounded_channel();
-    let capture = AudioCapture::start(&config.microphone, audio_sender)?;
-
+    let mut stop_receiver = stop_receiver;
     let request_id = Uuid::new_v4().to_string();
     let mut request = config
         .endpoint
@@ -85,8 +92,14 @@ pub async fn recognize(
     }
 
     let connect_started = Instant::now();
-    let (websocket, response) = timeout(CONNECT_TIMEOUT, connect_async(request))
-        .await
+    let connection = tokio::select! {
+        _ = &mut stop_receiver => {
+            info!("ASR session cancelled while connecting");
+            return Ok(String::new());
+        }
+        result = timeout(CONNECT_TIMEOUT, connect_async(request)) => result,
+    };
+    let (websocket, response) = connection
         .context("timed out while connecting to VolcEngine ASR")?
         .context("failed to connect to VolcEngine ASR")?;
     info!(
@@ -114,20 +127,23 @@ pub async fn recognize(
             "result_type": "full"
         }
     });
-    writer
-        .send(Message::Binary(
+    timeout(
+        SOCKET_WRITE_TIMEOUT,
+        writer.send(Message::Binary(
             protocol::full_request(1, &request_payload)?.into(),
-        ))
-        .await
-        .context("failed to send the initial ASR request")?;
+        )),
+    )
+    .await
+    .context("timed out sending the initial ASR request")?
+    .context("failed to send the initial ASR request")?;
     debug!(sequence = 1, "initial ASR request sent");
     let _ = events.send(StreamEvent::Connected);
 
+    let (audio_sender, mut audio_receiver) = mpsc::unbounded_channel();
+    let capture = AudioCapture::start(&config.microphone, audio_sender)?;
     let mut sequence = 2;
     let mut pending_samples = Vec::with_capacity(AUDIO_PACKET_SAMPLES * 2);
     let mut final_text = String::new();
-    let mut last_level_event = Instant::now() - LEVEL_EVENT_INTERVAL;
-    let mut stop_receiver = stop_receiver;
 
     loop {
         tokio::select! {
@@ -138,10 +154,6 @@ pub async fn recognize(
                 match audio_event {
                     Some(AudioEvent::Data(chunk)) => {
                         pending_samples.extend_from_slice(&chunk.samples);
-                        if last_level_event.elapsed() >= LEVEL_EVENT_INTERVAL {
-                            let _ = events.send(StreamEvent::Level(chunk.level));
-                            last_level_event = Instant::now();
-                        }
                         while pending_samples.len() >= AUDIO_PACKET_SAMPLES {
                             let samples: Vec<i16> = pending_samples.drain(..AUDIO_PACKET_SAMPLES).collect();
                             send_audio(&mut writer, sequence, &samples, false).await?;
@@ -176,7 +188,7 @@ pub async fn recognize(
     send_audio(&mut writer, sequence, &pending_samples, true).await?;
 
     let final_wait_started = Instant::now();
-    timeout(FINAL_RESPONSE_TIMEOUT, async {
+    let final_response = timeout(FINAL_RESPONSE_TIMEOUT, async {
         loop {
             let message = reader.next().await;
             if handle_message(message, &mut writer, &events, &mut final_text).await? {
@@ -184,12 +196,21 @@ pub async fn recognize(
             }
         }
     })
-    .await
-    .context("timed out waiting for the final ASR response")??;
+    .await;
+    match final_response {
+        Ok(result) => result?,
+        Err(_) if !final_text.is_empty() => {
+            warn!(
+                wait_ms = final_wait_started.elapsed().as_millis(),
+                "final ASR marker timed out; using the latest transcript"
+            );
+        }
+        Err(_) => bail!("timed out waiting for the final ASR response"),
+    }
     info!(
         final_wait_ms = final_wait_started.elapsed().as_millis(),
         characters = final_text.chars().count(),
-        "final ASR response received"
+        "ASR session finalized"
     );
 
     Ok(final_text)
@@ -211,12 +232,15 @@ where
         is_last,
         "sending ASR audio packet"
     );
-    writer
-        .send(Message::Binary(
+    timeout(
+        SOCKET_WRITE_TIMEOUT,
+        writer.send(Message::Binary(
             protocol::audio_request(sequence, &pcm, is_last)?.into(),
-        ))
-        .await
-        .context("failed to stream microphone audio to VolcEngine")
+        )),
+    )
+    .await
+    .context("timed out streaming microphone audio to VolcEngine")?
+    .context("failed to stream microphone audio to VolcEngine")
 }
 
 async fn handle_message<S>(
@@ -254,5 +278,33 @@ where
         Some(Ok(_)) => Ok(false),
         Some(Err(error)) => Err(error).context("ASR WebSocket receive failed"),
         None => bail!("ASR WebSocket ended before the final result"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn stop_cancels_a_session_while_it_is_connecting() {
+        install_tls_provider().unwrap();
+        let config = AppConfig {
+            secret_key: "test-key".to_owned(),
+            endpoint: "wss://192.0.2.1/voice-flow-test".to_owned(),
+            ..AppConfig::default()
+        };
+        let (stop_sender, stop_receiver) = oneshot::channel();
+        let (event_sender, _event_receiver) = mpsc::unbounded_channel();
+        stop_sender.send(()).unwrap();
+
+        let result = timeout(
+            Duration::from_secs(1),
+            recognize(config, stop_receiver, event_sender),
+        )
+        .await
+        .expect("stop should not leave the connection pending")
+        .unwrap();
+
+        assert!(result.is_empty());
     }
 }

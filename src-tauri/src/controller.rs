@@ -1,7 +1,10 @@
+use std::any::Any;
+use std::panic::AssertUnwindSafe;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
+use futures_util::FutureExt;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition};
 use tokio::sync::oneshot;
@@ -13,7 +16,6 @@ use crate::platform;
 use crate::shortcut::ShortcutBinding;
 
 const RUNTIME_EVENT: &str = "voice-flow://runtime";
-const LEVEL_EVENT: &str = "voice-flow://level";
 
 pub struct AppState {
     pub config: Mutex<AppConfig>,
@@ -57,11 +59,6 @@ impl RuntimeSnapshot {
             message: "Ready".to_owned(),
         }
     }
-}
-
-#[derive(Clone, Serialize)]
-struct LevelPayload {
-    level: f32,
 }
 
 impl AppState {
@@ -141,7 +138,12 @@ pub fn begin(app: &AppHandle) -> Result<(), String> {
 
     let app_handle = app.clone();
     tauri::async_runtime::spawn(async move {
-        run_session(app_handle, config, stop_receiver).await;
+        if let Err(panic) = AssertUnwindSafe(run_session(app_handle.clone(), config, stop_receiver))
+            .catch_unwind()
+            .await
+        {
+            recover_from_session_panic(&app_handle, panic.as_ref());
+        }
     });
     Ok(())
 }
@@ -331,9 +333,6 @@ fn handle_stream_event(app: &AppHandle, event: StreamEvent) {
                 },
             );
         }
-        StreamEvent::Level(level) => {
-            let _ = app.emit(LEVEL_EVENT, LevelPayload { level });
-        }
     }
 }
 
@@ -350,6 +349,27 @@ fn publish_runtime(app: &AppHandle, snapshot: RuntimeSnapshot) {
     let _ = app.emit(RUNTIME_EVENT, snapshot);
 }
 
+fn recover_from_session_panic(app: &AppHandle, panic: &(dyn Any + Send)) {
+    let detail = if let Some(message) = panic.downcast_ref::<String>() {
+        message.clone()
+    } else if let Some(message) = panic.downcast_ref::<&str>() {
+        (*message).to_owned()
+    } else {
+        "unknown panic payload".to_owned()
+    };
+    error!(%detail, "dictation worker panicked; session state recovered");
+    *lock(&app.state::<AppState>().session) = None;
+    publish_runtime(
+        app,
+        RuntimeSnapshot {
+            phase: "error".to_owned(),
+            transcript: String::new(),
+            message: format!("Dictation worker failed: {detail}"),
+        },
+    );
+    hide_dictation_window(app);
+}
+
 fn show_dictation_window(app: &AppHandle) -> Result<(), String> {
     let window = app
         .get_webview_window("dictation")
@@ -358,6 +378,9 @@ fn show_dictation_window(app: &AppHandle) -> Result<(), String> {
     window
         .set_focusable(false)
         .map_err(|error| format!("failed to keep the dictation window unfocused: {error}"))?;
+    window
+        .set_ignore_cursor_events(true)
+        .map_err(|error| format!("failed to make the dictation window click-through: {error}"))?;
 
     if let Ok(Some(monitor)) = window.current_monitor() {
         let monitor_position = monitor.position();

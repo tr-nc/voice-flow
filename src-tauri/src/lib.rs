@@ -59,13 +59,21 @@ fn save_config(
 #[tauri::command]
 fn start_dictation(app: AppHandle) -> Result<(), String> {
     info!(source = "ui", "dictation start requested");
-    controller::begin(&app)
+    let result = controller::begin(&app);
+    if let Err(error) = &result {
+        error!(%error, "UI dictation start failed");
+    }
+    result
 }
 
 #[tauri::command]
 fn stop_dictation(app: AppHandle) -> Result<(), String> {
     info!(source = "ui", "dictation stop requested");
-    controller::stop(&app)
+    let result = controller::stop(&app);
+    if let Err(error) = &result {
+        error!(%error, "UI dictation stop failed");
+    }
+    result
 }
 
 fn handle_shortcut(app: &AppHandle, shortcut_event: shortcut::ShortcutEvent) {
@@ -100,6 +108,7 @@ pub fn run() {
         .manage(AppState::default())
         .setup(|app| {
             let log_path = logging::init(app.handle())?;
+            asr::install_tls_provider()?;
             let config = config::load(app.handle())?;
             info!(
                 version = env!("CARGO_PKG_VERSION"),

@@ -4,7 +4,7 @@
 
 - [x] macOS Tauri shell
 - [x] VolcEngine bidirectional streaming ASR
-- [x] live transcript ribbon
+- [x] click-through, transcript-only overlay
 - [x] hold-to-talk and toggle shortcuts with side-specific modifier keys
 - [x] selectable microphone
 - [x] active-cursor insertion
