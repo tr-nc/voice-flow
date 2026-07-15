@@ -1,0 +1,27 @@
+[package]
+name = "voice-flow"
+version = "0.1.0"
+description = "Cross-application streaming voice input"
+authors = ["Voice Flow contributors"]
+edition = "2024"
+
+[lib]
+name = "voice_flow_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+anyhow = "1"
+arboard = "3"
+cpal = "0.16"
+flate2 = "1"
+futures-util = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = ["macos-private-api"] }
+tauri-plugin-global-shortcut = "2"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-native-roots"] }
+uuid = { version = "1", features = ["v4"] }
