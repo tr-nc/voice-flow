@@ -261,10 +261,14 @@ async function mountSettings(root: HTMLDivElement) {
       if (!active) {
         await flushConfigSave();
         if (lastSaveError) return;
+        if (!readConfig().secret_key) {
+          showDictationError("Secret Key is required");
+          return;
+        }
       }
       await invoke(active ? "stop_dictation" : "start_dictation");
     } catch (error) {
-      setStatus("error", "语音输入出错", asMessage(error));
+      showDictationError(asMessage(error));
     } finally {
       testButton.disabled = false;
     }
@@ -304,10 +308,18 @@ async function mountSettings(root: HTMLDivElement) {
       setStatus(secretKey.value ? "ready" : "setup", secretKey.value ? "语音输入已就绪" : "等待填写 Secret Key", prettyShortcut(config.shortcut));
       if (persistedRevision < saveRevision) void flushConfigSave();
     } else if (next.phase === "error") {
-      setStatus("error", "语音输入出错", next.message);
+      showDictationError(next.message);
     } else {
       setStatus(next.phase, phaseLabel(next.phase), next.message);
     }
+  }
+
+  function showDictationError(message: string) {
+    if (message === "Secret Key is required") {
+      setStatus("setup", "尚未配置 Secret Key", "请先填写上方 Secret Key，再开始语音输入");
+      return;
+    }
+    setStatus("error", "语音输入出错", message);
   }
 
   function finishShortcutCapture(shortcut: string) {
