@@ -35,6 +35,7 @@ type RuntimeSnapshot = {
 
 const app = document.querySelector<HTMLDivElement>("#app");
 if (!app) throw new Error("Missing #app root");
+const isLinux = navigator.userAgent.includes("Linux");
 
 const windowLabel = getCurrentWindow().label;
 if (windowLabel === "dictation" || new URLSearchParams(location.search).get("window") === "dictation") {
@@ -108,7 +109,7 @@ async function mountSettings(root: HTMLDivElement) {
               <div class="field shortcut-field">
                 <span>全局快捷键</span>
                 <button id="shortcut-capture" class="shortcut-capture" type="button">
-                  <kbd id="shortcut-value">L⌘  L⇧  Space</kbd>
+                  <kbd id="shortcut-value">读取中…</kbd>
                   <small>支持单键并区分左右</small>
                 </button>
               </div>
@@ -430,14 +431,14 @@ function shortcutKeyFromCode(code: string): string | undefined {
 
 function prettyShortcut(shortcut: string): string {
   const labels: Record<string, string> = {
-    Command: "L⌘",
-    RCommand: "R⌘",
+    Command: isLinux ? "L Super" : "L⌘",
+    RCommand: isLinux ? "R Super" : "R⌘",
     LControl: "L⌃",
     RControl: "R⌃",
     LShift: "L⇧",
     RShift: "R⇧",
-    LOption: "L⌥",
-    ROption: "R⌥",
+    LOption: isLinux ? "L Alt" : "L⌥",
+    ROption: isLinux ? "R Alt" : "R⌥",
     Up: "↑",
     Down: "↓",
     Left: "←",

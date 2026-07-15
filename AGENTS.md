@@ -10,19 +10,23 @@
 
 ## Runtime logs
 
-Voice Flow writes one fixed log file on macOS:
+Voice Flow writes one fixed log file per platform:
 
 ```text
+# macOS
 ~/Library/Logs/dev.voiceflow.desktop/voice-flow.log
+
+# Linux
+~/.local/share/dev.voiceflow.desktop/logs/voice-flow.log
 ```
 
 The same tracing output is written to stdout and the file. The file appends across launches and is truncated at startup when it reaches 5 MiB; no rotated log files are created.
 
-Useful diagnostics:
+Useful diagnostics on Linux (substitute the macOS path when applicable):
 
 ```bash
-tail -n 300 "$HOME/Library/Logs/dev.voiceflow.desktop/voice-flow.log"
-rg -n "ERROR|WARN|ASR|microphone|shortcut" "$HOME/Library/Logs/dev.voiceflow.desktop/voice-flow.log"
+tail -n 300 "$HOME/.local/share/dev.voiceflow.desktop/logs/voice-flow.log"
+rg -n "ERROR|WARN|ASR|microphone|shortcut" "$HOME/.local/share/dev.voiceflow.desktop/logs/voice-flow.log"
 ```
 
 Never log credentials, transcript text, or raw audio. Logging transcript lengths, packet sizes, timings, state transitions, device names, and non-secret provider metadata is allowed. Human-reviewed expected transcripts and user-approved audio under `examples/benchmarks/` are test fixtures rather than runtime logs; benchmark tools may print recognition results to their invoking terminal but must not write them to the application log.

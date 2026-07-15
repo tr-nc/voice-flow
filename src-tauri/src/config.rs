@@ -5,7 +5,12 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager};
 
+#[cfg(target_os = "macos")]
 pub const DEFAULT_SHORTCUT: &str = "Command+LShift+Space";
+#[cfg(target_os = "linux")]
+pub const DEFAULT_SHORTCUT: &str = "RControl";
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub const DEFAULT_SHORTCUT: &str = "LControl+LShift+Space";
 
 #[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

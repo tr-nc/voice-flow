@@ -6,7 +6,7 @@ The interface uses a quiet, warm, writing-focused visual system rather than a hi
 
 ## MVP scope
 
-- macOS runtime support today; Linux-facing boundaries are isolated for a later implementation.
+- macOS and Linux (Wayland or X11) runtime support.
 - VolcEngine WebSocket V3 bidirectional streaming ASR.
 - One locally stored Secret Key for VolcEngine authentication.
 - Global hold-to-talk and toggle shortcuts using any supported single key or key chord, including left/right modifier distinction.
@@ -18,7 +18,11 @@ The interface uses a quiet, warm, writing-focused visual system rather than a hi
 
 ## Run
 
-Prerequisites: Rust, Node.js, npm, Xcode command-line tools, and a VolcEngine Speech account.
+Prerequisites: Rust, Node.js, npm, and a VolcEngine Speech account.
+
+### macOS
+
+Install the Xcode command-line tools, then run:
 
 ```bash
 npm install
@@ -26,6 +30,32 @@ npm run tauri dev
 ```
 
 On first use, macOS asks for microphone access. Global side-specific shortcut detection and automatic insertion also need Accessibility permission for Voice Flow (or the terminal during development) under **System Settings → Privacy & Security → Accessibility**.
+
+### Linux
+
+Install the Tauri/WebKit and audio build dependencies. On Fedora:
+
+```bash
+sudo dnf install gcc gtk3-devel webkit2gtk4.1-devel alsa-lib-devel
+```
+
+Voice Flow reads Linux input event devices so hold shortcuts and left/right modifiers work under both Wayland and X11. Grant that access once, load the virtual-input module used for automatic paste, then **sign out and back in** so the new group membership takes effect:
+
+```bash
+sudo usermod -aG input "$USER"
+sudo modprobe uinput
+```
+
+Membership in `input` permits applications running as your user to observe keyboard events; only grant it on a machine you control. `/dev/uinput` must also be writable by the logged-in user (Fedora grants this through an active-session ACL). Voice Flow never logs pressed keys.
+
+After signing back in:
+
+```bash
+npm install
+npm run tauri dev
+```
+
+The Linux default shortcut is right Control. Automatic insertion uses the desktop clipboard and a virtual `Shift+Insert`, which works without stealing focus on Wayland and X11. Enter the Secret Key again on a new computer; local settings are intentionally not synchronized.
 
 ## Credentials and settings
 
@@ -40,13 +70,18 @@ Voice Flow uses the optimized bidirectional ASR endpoint `wss://openspeech.byted
 - `src-tauri/src/controller.rs`: dictation lifecycle and UI events.
 - `src-tauri/src/shortcut.rs`: arbitrary key/chord polling with left/right modifier distinction.
 - `src-tauri/src/logging.rs`: identical stdout and fixed-file tracing output.
-- `src-tauri/src/platform/`: active-cursor insertion boundary; macOS is implemented, Linux is intentionally isolated.
+- `src-tauri/src/platform/`: active-cursor insertion boundary; macOS uses System Events and Linux uses `uinput`.
 - `src-tauri/src/config.rs`: local settings and validation.
 - `src/`: framework-free TypeScript UI for the settings window and transcript-only overlay.
 
 Provider endpoint/resource policy is owned by the backend. User choices such as microphone, interaction mode, shortcut, and insertion behavior live in the automatically persisted settings model.
 
-Runtime logs are written to stdout and `~/Library/Logs/dev.voiceflow.desktop/voice-flow.log` with identical content. Transcript text, credentials, and raw audio are never logged. See [`AGENTS.md`](AGENTS.md) for diagnostic commands.
+Runtime logs are written to stdout and one platform-local file with identical content:
+
+- macOS: `~/Library/Logs/dev.voiceflow.desktop/voice-flow.log`
+- Linux: `~/.local/share/dev.voiceflow.desktop/logs/voice-flow.log`
+
+Transcript text, credentials, pressed keys, and raw audio are never logged. See [`AGENTS.md`](AGENTS.md) for diagnostic commands.
 
 Licensed under [MIT](LICENSE). See [CONTRIBUTING.md](CONTRIBUTING.md) for project boundaries and validation steps.
 

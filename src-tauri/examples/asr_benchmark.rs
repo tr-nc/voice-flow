@@ -524,9 +524,7 @@ fn load_secret_key() -> Result<String> {
         }
     }
 
-    let home = std::env::var_os("HOME").context("HOME is unavailable")?;
-    let path =
-        PathBuf::from(home).join("Library/Application Support/dev.voiceflow.desktop/settings.json");
+    let path = local_settings_path()?;
     let contents = fs::read_to_string(&path).with_context(|| {
         format!(
             "failed to read local Voice Flow settings from {}",
@@ -549,6 +547,26 @@ fn load_secret_key() -> Result<String> {
         bail!("the local Voice Flow settings do not contain a Secret Key");
     }
     Ok(secret_key)
+}
+
+fn local_settings_path() -> Result<PathBuf> {
+    let home = std::env::var_os("HOME").context("HOME is unavailable")?;
+
+    #[cfg(target_os = "macos")]
+    return Ok(
+        PathBuf::from(home).join("Library/Application Support/dev.voiceflow.desktop/settings.json")
+    );
+
+    #[cfg(target_os = "linux")]
+    {
+        let config_directory = std::env::var_os("XDG_CONFIG_HOME")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(home).join(".config"));
+        Ok(config_directory.join("dev.voiceflow.desktop/settings.json"))
+    }
+
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    bail!("loading Voice Flow settings is not supported on this platform")
 }
 
 fn install_tls_provider() -> Result<()> {

@@ -1,16 +1,28 @@
 use std::collections::HashSet;
 use std::fmt::{self, Display};
 use std::str::FromStr;
+#[cfg(not(target_os = "linux"))]
 use std::thread;
+#[cfg(not(target_os = "linux"))]
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
-use device_query::{DeviceQuery, DeviceState, Keycode};
-use tauri::{AppHandle, Manager};
+use device_query::Keycode;
+#[cfg(not(target_os = "linux"))]
+use device_query::{DeviceQuery, DeviceState};
+use tauri::AppHandle;
+#[cfg(not(target_os = "linux"))]
+use tauri::Manager;
+#[cfg(not(target_os = "linux"))]
 use tracing::{error, info};
 
+#[cfg(not(target_os = "linux"))]
 use crate::controller::AppState;
 
+#[cfg(target_os = "linux")]
+mod linux;
+
+#[cfg(not(target_os = "linux"))]
 const POLL_INTERVAL: Duration = Duration::from_millis(8);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -60,12 +72,18 @@ impl Display for ShortcutBinding {
     }
 }
 
+#[cfg(target_os = "linux")]
+pub fn start_monitor(app: AppHandle, handler: fn(&AppHandle, ShortcutEvent)) -> Result<()> {
+    linux::start_monitor(app, handler)
+}
+
+#[cfg(not(target_os = "linux"))]
 pub fn start_monitor(app: AppHandle, handler: fn(&AppHandle, ShortcutEvent)) -> Result<()> {
     thread::Builder::new()
         .name("voice-flow-shortcut".to_owned())
         .spawn(move || {
             let Some(device) = DeviceState::checked_new() else {
-                error!("global shortcut monitor requires macOS Accessibility permission; grant permission and restart Voice Flow");
+                error!("global shortcut monitor requires input monitoring permission; grant permission and restart Voice Flow");
                 return;
             };
             info!(poll_interval_ms = POLL_INTERVAL.as_millis(), "global shortcut monitor started");

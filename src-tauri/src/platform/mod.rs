@@ -20,6 +20,19 @@ mod unsupported;
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 use unsupported::UnsupportedTextInjector as CurrentTextInjector;
 
+pub fn prepare_runtime() -> Option<&'static str> {
+    #[cfg(target_os = "linux")]
+    return linux::prepare_runtime();
+    #[cfg(not(target_os = "linux"))]
+    None
+}
+
+pub fn initialize() -> Result<()> {
+    #[cfg(target_os = "linux")]
+    linux::initialize()?;
+    Ok(())
+}
+
 pub fn insert_at_active_cursor(text: &str) -> Result<()> {
     CurrentTextInjector.insert_at_active_cursor(text)
 }

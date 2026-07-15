@@ -32,4 +32,4 @@ cargo clippy --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
 
 ## Current platform status
 
-macOS is the supported MVP target. Linux audio and shortcuts use cross-platform dependencies already, while cursor insertion remains an explicit platform task.
+macOS and Linux are supported. Linux shortcut monitoring uses readable `evdev` keyboard devices and cursor insertion uses `uinput`; keep those implementations isolated from the macOS permission and insertion paths.

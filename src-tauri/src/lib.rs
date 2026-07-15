@@ -8,7 +8,7 @@ mod platform;
 mod shortcut;
 
 use tauri::{AppHandle, Manager, State};
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
 
 use audio::Microphone;
 use config::{AppConfig, InteractionMode};
@@ -107,10 +107,14 @@ fn handle_shortcut(app: &AppHandle, shortcut_event: shortcut::ShortcutEvent) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let graphics_workaround = platform::prepare_runtime();
     tauri::Builder::default()
         .manage(AppState::default())
-        .setup(|app| {
+        .setup(move |app| {
             let log_path = logging::init(app.handle())?;
+            if let Some(workaround) = graphics_workaround {
+                info!(workaround, "applied Linux WebKitGTK graphics workaround");
+            }
             asr::install_tls_provider()?;
             let config = config::load(app.handle())?;
             info!(
@@ -121,6 +125,9 @@ pub fn run() {
                 "Voice Flow starting"
             );
             app.state::<AppState>().replace_config(config);
+            if let Err(error) = platform::initialize() {
+                warn!(%error, "automatic cursor insertion is unavailable");
+            }
             shortcut::start_monitor(app.handle().clone(), handle_shortcut)?;
             Ok(())
         })

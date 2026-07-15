@@ -377,9 +377,15 @@ fn show_dictation_window(app: &AppHandle) -> Result<(), String> {
         .get_webview_window("dictation")
         .ok_or_else(|| "dictation window is unavailable".to_owned())?;
 
-    window
-        .set_focusable(false)
-        .map_err(|error| format!("failed to keep the dictation window unfocused: {error}"))?;
+    if let Err(error) = window.set_focusable(false) {
+        #[cfg(target_os = "linux")]
+        warn!(%error, "the Linux window manager cannot mark the dictation overlay as non-focusable");
+        #[cfg(not(target_os = "linux"))]
+        return Err(format!(
+            "failed to keep the dictation window unfocused: {error}"
+        ));
+    }
+    #[cfg(not(target_os = "linux"))]
     window
         .set_ignore_cursor_events(true)
         .map_err(|error| format!("failed to make the dictation window click-through: {error}"))?;
@@ -400,7 +406,15 @@ fn show_dictation_window(app: &AppHandle) -> Result<(), String> {
 
     window
         .show()
-        .map_err(|error| format!("failed to show the dictation window: {error}"))
+        .map_err(|error| format!("failed to show the dictation window: {error}"))?;
+
+    // Tao's Linux backend requires a realized GTK window before changing its
+    // input shape. Queuing this before `show` panics inside the event loop.
+    #[cfg(target_os = "linux")]
+    if let Err(error) = window.set_ignore_cursor_events(true) {
+        warn!(%error, "the Linux window manager cannot make the dictation overlay click-through");
+    }
+    Ok(())
 }
 
 fn hide_dictation_window(app: &AppHandle) {
