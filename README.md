@@ -52,11 +52,11 @@ Licensed under [MIT](LICENSE). See [CONTRIBUTING.md](CONTRIBUTING.md) for projec
 
 ## ASR benchmarks
 
-Human-reviewed audio fixtures and their expected transcripts live in [`examples/benchmarks`](examples/benchmarks). The benchmark accepts M4A, MP3, WAV, and other formats decoded by `ffmpeg`, then compares the legacy first-pass endpoint with current second-pass and non-streaming recognition using identical 200 ms PCM packets.
+Human-reviewed audio fixtures and their expected transcripts live in [`examples/benchmarks`](examples/benchmarks). The benchmark accepts M4A, MP3, WAV, and other formats decoded by `ffmpeg`, then compares current second-pass and non-streaming recognition using identical 200 ms PCM packets.
 
 ```bash
 cargo run --manifest-path src-tauri/Cargo.toml --example asr_benchmark -- \
-  examples/benchmarks/mandarin-basic-001
+  examples/benchmarks/code-switch-001-normal
 ```
 
 See the benchmark README for individual modes and hotword experiments. Credentials and decoded audio are never written to application logs.
