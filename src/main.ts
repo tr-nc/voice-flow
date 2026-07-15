@@ -55,53 +55,34 @@ async function mountSettings(root: HTMLDivElement) {
   document.body.className = "settings-body";
   root.innerHTML = `
     <main class="shell">
-      <aside class="rail">
+      <header class="settings-header">
         <div class="brand-lockup">
           <div class="brand-mark" aria-hidden="true">
             <span></span><span></span><span></span><span></span><span></span>
           </div>
-          <div>
-            <p class="eyebrow">SYSTEM DICTATION</p>
+          <div class="brand-copy">
             <h1>Voice Flow</h1>
+            <div class="compact-status">
+              <span class="status-dot" id="status-dot"></span>
+              <strong id="status-title">正在初始化</strong>
+              <small id="status-detail">读取本地配置</small>
+            </div>
           </div>
         </div>
+        <button class="ghost-button" id="test-button" type="button">
+          <span class="button-record-dot"></span>
+          <span id="test-label">试说一次</span>
+        </button>
+      </header>
 
-        <div class="rail-copy">
-          <p class="rail-index">LIVE / 01</p>
-          <h2>只做语音输入，<br />不替换你的输入法。</h2>
-          <p>按住说话，实时确认文字；松开后直接落到原来的光标位置。</p>
-        </div>
+      <div class="signal-demo" aria-hidden="true">
+        ${Array.from({ length: 19 }, (_, index) => `<i style="--i:${index}"></i>`).join("")}
+      </div>
 
-        <div class="signal-demo" aria-hidden="true">
-          ${Array.from({ length: 19 }, (_, index) => `<i style="--i:${index}"></i>`).join("")}
-        </div>
-
-        <div class="rail-status">
-          <span class="status-dot" id="status-dot"></span>
-          <div>
-            <strong id="status-title">正在初始化</strong>
-            <small id="status-detail">读取本地配置</small>
-          </div>
-        </div>
-      </aside>
-
-      <section class="workspace">
-        <header class="workspace-header">
-          <div>
-            <p class="eyebrow">SETUP</p>
-            <h2>输入工作台</h2>
-          </div>
-          <button class="ghost-button" id="test-button" type="button">
-            <span class="button-record-dot"></span>
-            <span id="test-label">试说一次</span>
-          </button>
-        </header>
-
-        <div class="content-scroll">
+      <div class="content-scroll">
           <section class="panel credentials-panel">
             <div class="panel-heading">
               <div>
-                <span class="section-kicker">VOLCENGINE</span>
                 <h3>连接语音服务</h3>
               </div>
               <span class="local-badge">仅存本机</span>
@@ -126,7 +107,6 @@ async function mountSettings(root: HTMLDivElement) {
           <section class="panel input-panel">
             <div class="panel-heading compact">
               <div>
-                <span class="section-kicker">INPUT ROUTE</span>
                 <h3>说话方式</h3>
               </div>
             </div>
@@ -216,21 +196,20 @@ async function mountSettings(root: HTMLDivElement) {
 
           <div class="preview-panel" id="preview-panel">
             <div class="preview-meta">
-              <span>LIVE TRANSCRIPT</span>
+              <span>实时文字</span>
               <span id="preview-state">等待试说</span>
             </div>
             <p id="preview-text">实时识别的内容会同时显示在这里。</p>
           </div>
         </div>
 
-        <footer class="action-bar">
-          <p id="save-message">修改只保存在这台设备上</p>
-          <button class="primary-button" id="save-button" type="button">
-            <span>保存并启用</span>
-            <i aria-hidden="true">→</i>
-          </button>
-        </footer>
-      </section>
+      <footer class="action-bar">
+        <p id="save-message">修改只保存在这台设备上</p>
+        <button class="primary-button" id="save-button" type="button">
+          <span>保存并启用</span>
+          <i aria-hidden="true">→</i>
+        </button>
+      </footer>
     </main>
   `;
 

@@ -15,10 +15,10 @@
       {
         "label": "main",
         "title": "Voice Flow",
-        "width": 980,
-        "height": 720,
-        "minWidth": 840,
-        "minHeight": 640,
+        "width": 400,
+        "height": 576,
+        "minWidth": 360,
+        "minHeight": 460,
         "center": true,
         "resizable": true
       },
