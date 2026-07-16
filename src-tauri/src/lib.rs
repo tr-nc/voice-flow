@@ -3,10 +3,17 @@ mod asr_options;
 mod audio;
 mod config;
 mod controller;
+mod diagnostics;
 mod logging;
 mod platform;
 mod shortcut;
 
+#[cfg(target_os = "macos")]
+use tauri::{
+    ActivationPolicy,
+    menu::{Menu, MenuItem},
+    tray::TrayIconBuilder,
+};
 use tauri::{AppHandle, Manager, State};
 use tracing::{debug, error, info, warn};
 
@@ -105,12 +112,64 @@ fn handle_shortcut(app: &AppHandle, shortcut_event: shortcut::ShortcutEvent) {
     }
 }
 
+fn show_settings(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.unminimize();
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn setup_status_item(app: &mut tauri::App) -> tauri::Result<()> {
+    app.set_activation_policy(ActivationPolicy::Accessory);
+
+    let open_settings =
+        MenuItem::with_id(app, "open-settings", "Open Settings", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&open_settings])?;
+    let tray_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray-icon.png"))?;
+
+    TrayIconBuilder::with_id("voice-flow")
+        .icon(tray_icon)
+        .tooltip("Voice Flow")
+        .icon_as_template(true)
+        .menu(&menu)
+        .show_menu_on_left_click(true)
+        .on_menu_event(|app, event| {
+            if event.id() == "open-settings" {
+                show_settings(app);
+            }
+        })
+        .build(app)?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let graphics_workaround = platform::prepare_runtime();
     tauri::Builder::default()
+        // Keep this as the first plugin so a second launch exits before it can
+        // start another microphone capture and global shortcut monitor.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+            info!("additional Voice Flow launch redirected to the running instance");
+            show_settings(app);
+        }))
         .manage(AppState::default())
+        .on_window_event(|window, event| {
+            #[cfg(target_os = "macos")]
+            if window.label() == "main"
+                && let tauri::WindowEvent::CloseRequested { api, .. } = event
+            {
+                api.prevent_close();
+                let _ = window.hide();
+            }
+        })
         .setup(move |app| {
+            #[cfg(target_os = "macos")]
+            setup_status_item(app)?;
+            #[cfg(not(target_os = "macos"))]
+            show_settings(app.handle());
+
             let log_path = logging::init(app.handle())?;
             if let Some(workaround) = graphics_workaround {
                 info!(workaround, "applied Linux WebKitGTK graphics workaround");

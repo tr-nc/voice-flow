@@ -15,6 +15,7 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 anyhow = "1"
 arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
+chrono = "0.4"
 cpal = "0.16"
 device_query = "4.0.1"
 flate2 = "1"
@@ -22,13 +23,18 @@ futures-util = "0.3"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-tauri = { version = "2", features = ["macos-private-api"] }
+tauri = { version = "2", features = ["image-png", "macos-private-api", "tray-icon"] }
+tauri-plugin-single-instance = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio-tungstenite = { version = "0.28", features = ["rustls-tls-native-roots"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tokio-tungstenite = { version = "0.28", features = ["rustls-tls-native-roots"] }
 uuid = { version = "1", features = ["v4"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 dbus = { version = "0.9", features = ["vendored"] }
 evdev = "0.13"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2-application-services = { version = "0.3.2", default-features = false, features = ["std", "AXError", "AXUIElement", "AXValue", "HIServices"] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFCGTypes", "CFString"] }

@@ -37,6 +37,13 @@ pub fn insert_at_active_cursor(text: &str) -> Result<()> {
     CurrentTextInjector.insert_at_active_cursor(text)
 }
 
+pub fn focused_window_center() -> Option<(f64, f64)> {
+    #[cfg(target_os = "macos")]
+    return macos::focused_window_center();
+    #[cfg(not(target_os = "macos"))]
+    None
+}
+
 pub fn copy_to_clipboard(text: &str) -> Result<()> {
     let mut clipboard = Clipboard::new().context("failed to open the clipboard")?;
     clipboard

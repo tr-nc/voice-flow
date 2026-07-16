@@ -68,6 +68,7 @@ Voice Flow uses the optimized bidirectional ASR endpoint `wss://openspeech.byted
 - `src-tauri/src/audio.rs`: microphone capture and 16 kHz mono PCM resampling.
 - `src-tauri/src/asr/`: VolcEngine transport and binary protocol framing.
 - `src-tauri/src/controller.rs`: dictation lifecycle and UI events.
+- `src-tauri/src/diagnostics.rs`: self-contained recent-session audio and recognition metadata.
 - `src-tauri/src/shortcut.rs`: arbitrary key/chord polling with left/right modifier distinction.
 - `src-tauri/src/logging.rs`: identical stdout and fixed-file tracing output.
 - `src-tauri/src/platform/`: active-cursor insertion boundary; macOS uses System Events and Linux uses `uinput`.
@@ -81,13 +82,20 @@ Runtime logs are written to stdout and one platform-local file with identical co
 - macOS: `~/Library/Logs/dev.voiceflow.desktop/voice-flow.log`
 - Linux: `~/.local/share/dev.voiceflow.desktop/logs/voice-flow.log`
 
-Transcript text, credentials, pressed keys, and raw audio are never logged. See [`AGENTS.md`](AGENTS.md) for diagnostic commands.
+The global log does not contain transcript text, credentials, pressed keys, or raw audio. Every dictation has a shared `session_id` in the global log and its local diagnostic record.
+
+For reproducible troubleshooting, Voice Flow retains the latest 100 dictation sessions as self-contained folders containing `audio.wav` (16 kHz mono PCM captured before synthetic ASR edge guards) and `session.json` (timestamps, partial/final transcripts, audio format, outcome, and errors):
+
+- macOS: `~/Library/Application Support/dev.voiceflow.desktop/diagnostics/sessions/`
+- Linux: `~/.local/share/dev.voiceflow.desktop/diagnostics/sessions/`
+
+The oldest folder is deleted when the limit is exceeded. These records can contain sensitive speech and transcript content, remain local with user-only filesystem permissions, and are never uploaded automatically. See [`AGENTS.md`](AGENTS.md) for diagnostic commands.
 
 Licensed under [MIT](LICENSE). See [CONTRIBUTING.md](CONTRIBUTING.md) for project boundaries and validation steps.
 
 ## ASR benchmarks
 
-Human-reviewed audio fixtures and their expected transcripts live in [`examples/benchmarks`](examples/benchmarks). The benchmark accepts M4A, MP3, WAV, and other formats decoded by `ffmpeg`, then compares current second-pass and non-streaming recognition using identical real-time-paced 200 ms PCM packets. It independently scores final accuracy, live first-pass responsiveness, and stable second-pass follow latency while retaining the raw measurements.
+Human-reviewed audio fixtures and their expected transcripts live in [`examples/benchmarks`](examples/benchmarks). The benchmark accepts M4A, MP3, WAV, and other formats decoded by `ffmpeg`, trims boundary silence to model immediate push-to-talk speech, adds the same explicit edge guards as production, then compares current second-pass and non-streaming recognition using identical real-time-paced 200 ms PCM packets. It independently scores final accuracy, live first-pass responsiveness, and stable second-pass follow latency while retaining the raw measurements.
 
 ```bash
 cargo run --manifest-path src-tauri/Cargo.toml --example asr_benchmark -- \

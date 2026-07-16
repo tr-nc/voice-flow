@@ -12,9 +12,8 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::tungstenite::http::HeaderValue;
 use tokio_tungstenite::tungstenite::protocol::Message;
 use tracing::{debug, info, warn};
-use uuid::Uuid;
 
-use crate::asr_options::{CURRENT_ENDPOINT, RESOURCE_ID, VAD_END_WINDOW_MS};
+use crate::asr_options::{AUDIO_EDGE_GUARD_MS, CURRENT_ENDPOINT, RESOURCE_ID, VAD_END_WINDOW_MS};
 use crate::audio::{AudioCapture, AudioEvent, TARGET_SAMPLE_RATE};
 use crate::config::AppConfig;
 
@@ -22,6 +21,8 @@ const AUDIO_PACKET_SAMPLES: usize = 3_200;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const SOCKET_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const FINAL_RESPONSE_TIMEOUT: Duration = Duration::from_secs(6);
+pub const CAPTURE_TAIL_MS: u64 = 250;
+const CAPTURE_TAIL_DURATION: Duration = Duration::from_millis(CAPTURE_TAIL_MS);
 
 #[derive(Debug)]
 pub enum StreamEvent {
@@ -41,8 +42,11 @@ pub fn install_tls_provider() -> Result<()> {
 
 pub async fn recognize(
     config: AppConfig,
+    session_id: String,
     stop_receiver: oneshot::Receiver<()>,
     events: mpsc::UnboundedSender<StreamEvent>,
+    capture: AudioCapture,
+    mut audio_receiver: mpsc::UnboundedReceiver<AudioEvent>,
 ) -> Result<String> {
     config.validate_for_dictation()?;
     info!(
@@ -52,7 +56,7 @@ pub async fn recognize(
     );
 
     let mut stop_receiver = stop_receiver;
-    let request_id = Uuid::new_v4().to_string();
+    let request_id = session_id;
     let mut request = CURRENT_ENDPOINT
         .into_client_request()
         .context("failed to create the VolcEngine WebSocket request")?;
@@ -73,18 +77,26 @@ pub async fn recognize(
         HeaderValue::from_str(&config.secret_key).context("Secret Key is not a valid header")?,
     );
 
+    let mut capture = Some(capture);
+    let mut stop_requested = false;
     let connect_started = Instant::now();
-    let connection = tokio::select! {
-        _ = &mut stop_receiver => {
-            info!("ASR session cancelled while connecting");
-            return Ok(String::new());
+    let connection = timeout(CONNECT_TIMEOUT, connect_async(request));
+    tokio::pin!(connection);
+    let connection = loop {
+        tokio::select! {
+            result = &mut connection => break result,
+            _ = &mut stop_receiver, if !stop_requested => {
+                stop_requested = true;
+                info!("dictation stopped while ASR was connecting; preserving captured audio");
+                finish_capture(&mut capture).await;
+            }
         }
-        result = timeout(CONNECT_TIMEOUT, connect_async(request)) => result,
     };
     let (websocket, response) = connection
         .context("timed out while connecting to VolcEngine ASR")?
         .context("failed to connect to VolcEngine ASR")?;
     info!(
+        request_id,
         elapsed_ms = connect_started.elapsed().as_millis(),
         status = %response.status(),
         "ASR WebSocket connected"
@@ -104,46 +116,53 @@ pub async fn recognize(
     debug!(sequence = 1, "initial ASR request sent");
     let _ = events.send(StreamEvent::Connected);
 
-    let (audio_sender, mut audio_receiver) = mpsc::unbounded_channel();
-    let capture = AudioCapture::start(&config.microphone, audio_sender)?;
+    let edge_guard_samples = TARGET_SAMPLE_RATE as usize * AUDIO_EDGE_GUARD_MS / 1_000;
     let mut sequence = 2;
-    let mut pending_samples = Vec::with_capacity(AUDIO_PACKET_SAMPLES * 2);
+    let mut pending_samples = vec![0; edge_guard_samples];
     let mut final_text = String::new();
 
-    loop {
-        tokio::select! {
-            _ = &mut stop_receiver => {
-                break;
-            }
-            audio_event = audio_receiver.recv() => {
-                match audio_event {
-                    Some(AudioEvent::Data(chunk)) => {
-                        pending_samples.extend_from_slice(&chunk.samples);
-                        while pending_samples.len() >= AUDIO_PACKET_SAMPLES {
-                            let samples: Vec<i16> = pending_samples.drain(..AUDIO_PACKET_SAMPLES).collect();
-                            send_audio(&mut writer, sequence, &samples, false).await?;
-                            sequence += 1;
-                        }
-                    }
-                    Some(AudioEvent::Error(error)) => bail!("microphone capture failed: {error}"),
-                    None => bail!("microphone capture stopped unexpectedly"),
+    if !stop_requested {
+        loop {
+            tokio::select! {
+                _ = &mut stop_receiver => {
+                    stop_requested = true;
+                    break;
                 }
-            }
-            message = reader.next() => {
-                if handle_message(message, &mut writer, &events, &mut final_text).await? {
-                    return Ok(final_text);
+                audio_event = audio_receiver.recv() => {
+                    match audio_event {
+                        Some(AudioEvent::Data(chunk)) => {
+                            pending_samples.extend_from_slice(&chunk.samples);
+                            while pending_samples.len() >= AUDIO_PACKET_SAMPLES {
+                                let samples: Vec<i16> = pending_samples.drain(..AUDIO_PACKET_SAMPLES).collect();
+                                send_audio(&mut writer, sequence, &samples, false).await?;
+                                sequence += 1;
+                            }
+                        }
+                        Some(AudioEvent::Error(error)) => bail!("microphone capture failed: {error}"),
+                        None => bail!("microphone capture stopped unexpectedly"),
+                    }
+                }
+                message = reader.next() => {
+                    if handle_message(message, &mut writer, &events, &mut final_text).await? {
+                        return Ok(final_text);
+                    }
                 }
             }
         }
     }
 
-    drop(capture);
+    if stop_requested {
+        finish_capture(&mut capture).await;
+    } else {
+        drop(capture.take());
+    }
     while let Ok(audio_event) = audio_receiver.try_recv() {
         match audio_event {
             AudioEvent::Data(chunk) => pending_samples.extend_from_slice(&chunk.samples),
             AudioEvent::Error(error) => bail!("microphone capture failed: {error}"),
         }
     }
+    pending_samples.resize(pending_samples.len() + edge_guard_samples, 0);
 
     while pending_samples.len() > AUDIO_PACKET_SAMPLES {
         let samples: Vec<i16> = pending_samples.drain(..AUDIO_PACKET_SAMPLES).collect();
@@ -179,6 +198,13 @@ pub async fn recognize(
     );
 
     Ok(final_text)
+}
+
+async fn finish_capture(capture: &mut Option<AudioCapture>) {
+    if capture.is_some() {
+        tokio::time::sleep(CAPTURE_TAIL_DURATION).await;
+        drop(capture.take());
+    }
 }
 
 fn request_payload() -> serde_json::Value {
@@ -286,25 +312,12 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn stop_cancels_a_session_while_it_is_connecting() {
-        install_tls_provider().unwrap();
-        let config = AppConfig {
-            secret_key: "test-key".to_owned(),
-            ..AppConfig::default()
-        };
-        let (stop_sender, stop_receiver) = oneshot::channel();
-        let (event_sender, _event_receiver) = mpsc::unbounded_channel();
-        stop_sender.send(()).unwrap();
-
-        let result = timeout(
-            Duration::from_secs(1),
-            recognize(config, stop_receiver, event_sender),
-        )
-        .await
-        .expect("stop should not leave the connection pending")
-        .unwrap();
-
-        assert!(result.is_empty());
+    #[test]
+    fn production_audio_has_an_edge_guard() {
+        assert_eq!(AUDIO_EDGE_GUARD_MS, 200);
+        assert_eq!(
+            TARGET_SAMPLE_RATE as usize * AUDIO_EDGE_GUARD_MS / 1_000,
+            3_200
+        );
     }
 }

@@ -48,30 +48,6 @@ async function mountSettings(root: HTMLDivElement) {
   document.body.className = "settings-body";
   root.innerHTML = `
     <main class="shell">
-      <header class="settings-header">
-        <div class="brand-lockup">
-          <div class="brand-mark" aria-hidden="true">
-            <span></span><span></span><span></span><span></span><span></span>
-          </div>
-          <div class="brand-copy">
-            <h1>Voice Flow</h1>
-            <div class="compact-status">
-              <span class="status-dot" id="status-dot"></span>
-              <strong id="status-title">正在初始化</strong>
-              <small id="status-detail">读取本地配置</small>
-            </div>
-          </div>
-        </div>
-        <button class="ghost-button" id="test-button" type="button">
-          <span class="button-record-dot"></span>
-          <span id="test-label">试说一次</span>
-        </button>
-      </header>
-
-      <div class="signal-demo" aria-hidden="true">
-        ${Array.from({ length: 19 }, (_, index) => `<i style="--i:${index}"></i>`).join("")}
-      </div>
-
       <div class="content-scroll">
           <section class="panel credentials-panel">
             <div class="panel-heading">
@@ -163,8 +139,6 @@ async function mountSettings(root: HTMLDivElement) {
   const shortcutCapture = element<HTMLButtonElement>("#shortcut-capture");
   const shortcutValue = element<HTMLElement>("#shortcut-value");
   const autoInsert = element<HTMLInputElement>("#auto-insert");
-  const testButton = element<HTMLButtonElement>("#test-button");
-  const testLabel = element<HTMLElement>("#test-label");
 
   let config: AppConfig;
   let runtime: RuntimeSnapshot;
@@ -175,7 +149,6 @@ async function mountSettings(root: HTMLDivElement) {
   let persistedRevision = 0;
   let saveTimer: number | undefined;
   let saveLoop: Promise<void> | undefined;
-  let lastSaveError: string | undefined;
   let unlistenRuntime: UnlistenFn | undefined;
 
   try {
@@ -190,7 +163,7 @@ async function mountSettings(root: HTMLDivElement) {
     applyConfig(config);
     applyRuntime(runtime);
   } catch (error) {
-    setStatus("error", "初始化失败", asMessage(error));
+    console.error("Failed to initialize settings", error);
     return;
   }
 
@@ -255,25 +228,6 @@ async function mountSettings(root: HTMLDivElement) {
     scheduleConfigSave();
   });
 
-  testButton.addEventListener("click", async () => {
-    testButton.disabled = true;
-    try {
-      if (!active) {
-        await flushConfigSave();
-        if (lastSaveError) return;
-        if (!readConfig().secret_key) {
-          showDictationError("Secret Key is required");
-          return;
-        }
-      }
-      await invoke(active ? "stop_dictation" : "start_dictation");
-    } catch (error) {
-      showDictationError(asMessage(error));
-    } finally {
-      testButton.disabled = false;
-    }
-  });
-
   function applyConfig(next: AppConfig) {
     secretKey.value = next.secret_key;
     microphone.value = next.microphone;
@@ -302,24 +256,8 @@ async function mountSettings(root: HTMLDivElement) {
 
   function applyRuntime(next: RuntimeSnapshot) {
     active = ["connecting", "listening", "finalizing", "inserting"].includes(next.phase);
-    testLabel.textContent = active ? "结束并插入" : "试说一次";
-    testButton.classList.toggle("is-recording", active);
-    if (next.phase === "idle" && !next.transcript) {
-      setStatus(secretKey.value ? "ready" : "setup", secretKey.value ? "语音输入已就绪" : "等待填写 Secret Key", prettyShortcut(config.shortcut));
-      if (persistedRevision < saveRevision) void flushConfigSave();
-    } else if (next.phase === "error") {
-      showDictationError(next.message);
-    } else {
-      setStatus(next.phase, phaseLabel(next.phase), next.message);
-    }
-  }
-
-  function showDictationError(message: string) {
-    if (message === "Secret Key is required") {
-      setStatus("setup", "尚未配置 Secret Key", "请先填写上方 Secret Key，再开始语音输入");
-      return;
-    }
-    setStatus("error", "语音输入出错", message);
+    if (next.phase === "idle" && persistedRevision < saveRevision) void flushConfigSave();
+    if (next.phase === "error") console.error("Dictation failed:", next.message);
   }
 
   function finishShortcutCapture(shortcut: string) {
@@ -359,12 +297,9 @@ async function mountSettings(root: HTMLDivElement) {
       try {
         config = await invoke<AppConfig>("save_config", { config: readConfig() });
         persistedRevision = targetRevision;
-        lastSaveError = undefined;
-        setStatus(secretKey.value ? "ready" : "setup", secretKey.value ? "语音输入已就绪" : "等待填写 Secret Key", prettyShortcut(config.shortcut));
       } catch (error) {
         persistedRevision = targetRevision;
-        lastSaveError = asMessage(error);
-        setStatus("error", "设置自动保存失败", lastSaveError);
+        console.error("Failed to save settings:", asMessage(error));
       }
     }
   }
@@ -472,29 +407,6 @@ function prettyShortcut(shortcut: string): string {
     .split("+")
     .map((key) => labels[key] ?? key)
     .join("  ");
-}
-
-function phaseLabel(phase: RuntimePhase): string {
-  const labels: Record<RuntimePhase, string> = {
-    idle: "就绪",
-    connecting: "连接中",
-    listening: "正在聆听",
-    finalizing: "正在收尾",
-    inserting: "正在插入",
-    complete: "已完成",
-    error: "出现错误",
-  };
-  return labels[phase];
-}
-
-function setStatus(kind: string, title: string, detail: string) {
-  const dot = document.querySelector<HTMLElement>("#status-dot");
-  const titleElement = document.querySelector<HTMLElement>("#status-title");
-  const detailElement = document.querySelector<HTMLElement>("#status-detail");
-  if (!dot || !titleElement || !detailElement) return;
-  dot.dataset.state = kind;
-  titleElement.textContent = title;
-  detailElement.textContent = detail;
 }
 
 function element<T extends Element>(selector: string): T {

@@ -1,12 +1,14 @@
 use std::sync::mpsc::Sender as StopSender;
-use std::thread;
+use std::thread::{self, JoinHandle};
 
 use anyhow::{Context, Result, bail};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream, StreamConfig};
 use serde::Serialize;
 use tokio::sync::mpsc::UnboundedSender;
-use tracing::{error, info};
+use tracing::{Span, error, info};
+
+use crate::diagnostics::DiagnosticAudioSink;
 
 pub const TARGET_SAMPLE_RATE: u32 = 16_000;
 
@@ -46,13 +48,42 @@ pub enum AudioEvent {
     Error(String),
 }
 
+#[derive(Clone)]
+struct AudioOutput {
+    sender: UnboundedSender<AudioEvent>,
+    diagnostics: Option<DiagnosticAudioSink>,
+}
+
+impl AudioOutput {
+    fn send_samples(&self, samples: Vec<i16>) {
+        if let Some(diagnostics) = &self.diagnostics {
+            diagnostics.write_samples(&samples);
+        }
+        let _ = self.sender.send(AudioEvent::Data(AudioChunk { samples }));
+    }
+
+    fn send_error(&self, error: impl ToString) {
+        let _ = self.sender.send(AudioEvent::Error(error.to_string()));
+    }
+}
+
 pub struct AudioCapture {
     stop_sender: Option<StopSender<()>>,
+    thread: Option<JoinHandle<()>>,
 }
 
 impl AudioCapture {
-    pub fn start(selected_microphone: &str, sender: UnboundedSender<AudioEvent>) -> Result<Self> {
+    pub fn start(
+        selected_microphone: &str,
+        sender: UnboundedSender<AudioEvent>,
+        diagnostics: Option<DiagnosticAudioSink>,
+    ) -> Result<Self> {
         let selected_microphone = selected_microphone.to_owned();
+        let output = AudioOutput {
+            sender,
+            diagnostics,
+        };
+        let capture_span = Span::current();
         let (stop_sender, stop_receiver) = std::sync::mpsc::channel();
         info!(
             microphone = if selected_microphone.is_empty() {
@@ -62,10 +93,11 @@ impl AudioCapture {
             },
             "starting microphone capture thread"
         );
-        thread::Builder::new()
+        let thread = thread::Builder::new()
             .name("voice-flow-microphone".to_owned())
             .spawn(move || {
-                let result = open_stream(&selected_microphone, sender.clone());
+                let _capture_guard = capture_span.enter();
+                let result = open_stream(&selected_microphone, output.clone());
                 match result {
                     Ok(stream) => {
                         let _ = stop_receiver.recv();
@@ -73,13 +105,14 @@ impl AudioCapture {
                     }
                     Err(error) => {
                         error!(%error, "microphone thread failed");
-                        let _ = sender.send(AudioEvent::Error(error.to_string()));
+                        output.send_error(error);
                     }
                 }
             })
             .context("failed to start the microphone thread")?;
         Ok(Self {
             stop_sender: Some(stop_sender),
+            thread: Some(thread),
         })
     }
 }
@@ -89,10 +122,15 @@ impl Drop for AudioCapture {
         if let Some(sender) = self.stop_sender.take() {
             let _ = sender.send(());
         }
+        if let Some(thread) = self.thread.take()
+            && thread.join().is_err()
+        {
+            error!("microphone thread panicked while stopping");
+        }
     }
 }
 
-fn open_stream(selected_microphone: &str, sender: UnboundedSender<AudioEvent>) -> Result<Stream> {
+fn open_stream(selected_microphone: &str, output: AudioOutput) -> Result<Stream> {
     let host = cpal::default_host();
     let device = if selected_microphone.is_empty() {
         host.default_input_device()
@@ -127,16 +165,28 @@ fn open_stream(selected_microphone: &str, sender: UnboundedSender<AudioEvent>) -
         target_rate = TARGET_SAMPLE_RATE,
         "microphone opened"
     );
+    let diagnostics = output.diagnostics.clone();
+    if let Some(diagnostics) = &diagnostics {
+        diagnostics.configure_source(
+            &device_name,
+            &format!("{sample_format:?}"),
+            source_rate,
+            config.channels,
+        );
+    }
 
     let stream = match sample_format {
-        SampleFormat::F32 => build_f32_stream(&device, &config, channels, source_rate, sender)?,
-        SampleFormat::I16 => build_i16_stream(&device, &config, channels, source_rate, sender)?,
-        SampleFormat::U16 => build_u16_stream(&device, &config, channels, source_rate, sender)?,
+        SampleFormat::F32 => build_f32_stream(&device, &config, channels, source_rate, output)?,
+        SampleFormat::I16 => build_i16_stream(&device, &config, channels, source_rate, output)?,
+        SampleFormat::U16 => build_u16_stream(&device, &config, channels, source_rate, output)?,
         format => bail!("unsupported microphone sample format: {format:?}"),
     };
     stream
         .play()
         .context("failed to start microphone capture")?;
+    if let Some(diagnostics) = &diagnostics {
+        diagnostics.mark_opened();
+    }
     Ok(stream)
 }
 
@@ -192,7 +242,7 @@ fn process_input<T>(
     channels: usize,
     convert: impl Fn(T) -> f32,
     resampler: &mut LinearResampler,
-    sender: &UnboundedSender<AudioEvent>,
+    output: &AudioOutput,
 ) where
     T: Copy,
 {
@@ -210,7 +260,7 @@ fn process_input<T>(
         resampler.push(mono, &mut samples);
     }
 
-    let _ = sender.send(AudioEvent::Data(AudioChunk { samples }));
+    output.send_samples(samples);
 }
 
 fn build_f32_stream(
@@ -218,19 +268,19 @@ fn build_f32_stream(
     config: &StreamConfig,
     channels: usize,
     source_rate: u32,
-    sender: UnboundedSender<AudioEvent>,
+    output: AudioOutput,
 ) -> Result<Stream> {
-    let error_sender = sender.clone();
+    let error_output = output.clone();
     let mut resampler = LinearResampler::new(source_rate);
     device
         .build_input_stream(
             config,
             move |data: &[f32], _| {
-                process_input(data, channels, |sample| sample, &mut resampler, &sender);
+                process_input(data, channels, |sample| sample, &mut resampler, &output);
             },
             move |error| {
                 tracing::error!(%error, "f32 microphone stream error");
-                let _ = error_sender.send(AudioEvent::Error(error.to_string()));
+                error_output.send_error(error);
             },
             None,
         )
@@ -242,9 +292,9 @@ fn build_i16_stream(
     config: &StreamConfig,
     channels: usize,
     source_rate: u32,
-    sender: UnboundedSender<AudioEvent>,
+    output: AudioOutput,
 ) -> Result<Stream> {
-    let error_sender = sender.clone();
+    let error_output = output.clone();
     let mut resampler = LinearResampler::new(source_rate);
     device
         .build_input_stream(
@@ -255,12 +305,12 @@ fn build_i16_stream(
                     channels,
                     |sample| f32::from(sample) / f32::from(i16::MAX),
                     &mut resampler,
-                    &sender,
+                    &output,
                 );
             },
             move |error| {
                 tracing::error!(%error, "i16 microphone stream error");
-                let _ = error_sender.send(AudioEvent::Error(error.to_string()));
+                error_output.send_error(error);
             },
             None,
         )
@@ -272,9 +322,9 @@ fn build_u16_stream(
     config: &StreamConfig,
     channels: usize,
     source_rate: u32,
-    sender: UnboundedSender<AudioEvent>,
+    output: AudioOutput,
 ) -> Result<Stream> {
-    let error_sender = sender.clone();
+    let error_output = output.clone();
     let mut resampler = LinearResampler::new(source_rate);
     device
         .build_input_stream(
@@ -285,12 +335,12 @@ fn build_u16_stream(
                     channels,
                     |sample| (f32::from(sample) / 32_767.5) - 1.0,
                     &mut resampler,
-                    &sender,
+                    &output,
                 );
             },
             move |error| {
                 tracing::error!(%error, "u16 microphone stream error");
-                let _ = error_sender.send(AudioEvent::Error(error.to_string()));
+                error_output.send_error(error);
             },
             None,
         )

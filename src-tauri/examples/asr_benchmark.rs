@@ -25,6 +25,9 @@ const SAMPLE_RATE: usize = 16_000;
 const PACKET_SAMPLES: usize = 3_200;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
+const TRIM_WINDOW_SAMPLES: usize = SAMPLE_RATE / 50;
+const TRIM_RELATIVE_RMS: f64 = 0.10;
+const TRIM_MINIMUM_RMS: f64 = 50.0;
 
 #[derive(Debug, Deserialize)]
 struct BenchmarkCase {
@@ -139,7 +142,9 @@ async fn main() -> Result<()> {
     install_tls_provider()?;
     let cli = parse_args()?;
     let (case, audio_path) = load_case(&cli.input)?;
-    let pcm = decode_audio(&audio_path)?;
+    let speech_pcm = trim_boundary_silence(decode_audio(&audio_path)?)?;
+    let speech_duration_ms = speech_pcm.len() * 1_000 / SAMPLE_RATE;
+    let pcm = add_edge_guards(speech_pcm);
     let duration_ms = pcm.len() * 1_000 / SAMPLE_RATE;
     let secret_key = load_secret_key()?;
 
@@ -147,9 +152,10 @@ async fn main() -> Result<()> {
     println!("source: {}", audio_path.display());
     println!("language: {}", case.language);
     println!(
-        "audio: {duration_ms}ms, {} samples at 16kHz mono s16le",
-        pcm.len()
+        "audio: {speech_duration_ms}ms edge-trimmed speech, {duration_ms}ms with {}ms production guards",
+        asr_options::AUDIO_EDGE_GUARD_MS
     );
+    println!("stream: {} samples at 16kHz mono s16le", pcm.len());
     println!("expected: {}", case.expected_text);
     println!("hotwords: {}", cli.hotwords.len());
     println!(
@@ -514,6 +520,42 @@ fn decode_audio(path: &Path) -> Result<Vec<i16>> {
         .chunks_exact(2)
         .map(|bytes| i16::from_le_bytes([bytes[0], bytes[1]]))
         .collect())
+}
+
+fn trim_boundary_silence(pcm: Vec<i16>) -> Result<Vec<i16>> {
+    let rms_values = pcm
+        .chunks(TRIM_WINDOW_SAMPLES)
+        .map(|window| {
+            let mean_square = window
+                .iter()
+                .map(|sample| f64::from(*sample).powi(2))
+                .sum::<f64>()
+                / window.len() as f64;
+            mean_square.sqrt()
+        })
+        .collect::<Vec<_>>();
+    let maximum_rms = rms_values.iter().copied().fold(0.0_f64, f64::max);
+    let threshold = (maximum_rms * TRIM_RELATIVE_RMS).max(TRIM_MINIMUM_RMS);
+    let first_active = rms_values
+        .iter()
+        .position(|rms| *rms >= threshold)
+        .context("benchmark audio contains no detectable speech")?;
+    let last_active = rms_values
+        .iter()
+        .rposition(|rms| *rms >= threshold)
+        .expect("an active window was already found");
+    let start = first_active * TRIM_WINDOW_SAMPLES;
+    let end = ((last_active + 1) * TRIM_WINDOW_SAMPLES).min(pcm.len());
+    Ok(pcm[start..end].to_vec())
+}
+
+fn add_edge_guards(pcm: Vec<i16>) -> Vec<i16> {
+    let guard_samples = SAMPLE_RATE * asr_options::AUDIO_EDGE_GUARD_MS / 1_000;
+    let mut guarded = Vec::with_capacity(pcm.len() + guard_samples * 2);
+    guarded.resize(guard_samples, 0);
+    guarded.extend(pcm);
+    guarded.resize(guarded.len() + guard_samples, 0);
+    guarded
 }
 
 fn load_secret_key() -> Result<String> {
@@ -971,5 +1013,35 @@ mod tests {
         assert_eq!(latency_score(400, 500, 2_500), 100.0);
         assert_eq!(latency_score(2_500, 500, 2_500), 0.0);
         assert_eq!(latency_score(1_500, 500, 2_500), 50.0);
+    }
+
+    #[test]
+    fn boundary_trimming_removes_silence_without_touching_speech() {
+        let mut pcm = vec![0; TRIM_WINDOW_SAMPLES * 2];
+        pcm.extend(vec![1_000; TRIM_WINDOW_SAMPLES * 2]);
+        pcm.extend(vec![0; TRIM_WINDOW_SAMPLES * 3]);
+
+        assert_eq!(
+            trim_boundary_silence(pcm).unwrap(),
+            vec![1_000; TRIM_WINDOW_SAMPLES * 2]
+        );
+    }
+
+    #[test]
+    fn edge_guards_wrap_speech_without_changing_it() {
+        let speech = vec![11, 22, 33];
+        let guarded = add_edge_guards(speech.clone());
+        let guard_samples = SAMPLE_RATE * asr_options::AUDIO_EDGE_GUARD_MS / 1_000;
+
+        assert_eq!(
+            &guarded[guard_samples..guard_samples + speech.len()],
+            &speech
+        );
+        assert!(guarded[..guard_samples].iter().all(|sample| *sample == 0));
+        assert!(
+            guarded[guard_samples + speech.len()..]
+                .iter()
+                .all(|sample| *sample == 0)
+        );
     }
 }

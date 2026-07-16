@@ -8,14 +8,18 @@ use futures_util::FutureExt;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition};
 use tokio::sync::oneshot;
-use tracing::{debug, error, info, warn};
+use tracing::{Instrument, debug, error, info, info_span, warn};
+use uuid::Uuid;
 
 use crate::asr::{self, StreamEvent};
+use crate::audio::{AudioCapture, AudioEvent};
 use crate::config::{AppConfig, InteractionMode};
+use crate::diagnostics::DiagnosticSession;
 use crate::platform;
 use crate::shortcut::ShortcutBinding;
 
 const RUNTIME_EVENT: &str = "voice-flow://runtime";
+const COMPLETION_STATUS_DURATION: Duration = Duration::from_millis(150);
 
 pub struct AppState {
     pub config: Mutex<AppConfig>,
@@ -41,7 +45,9 @@ impl Default for AppState {
 }
 
 struct ActiveSession {
+    session_id: String,
     stop_sender: Option<oneshot::Sender<()>>,
+    diagnostics: Option<DiagnosticSession>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -104,6 +110,23 @@ pub fn begin(app: &AppHandle) -> Result<(), String> {
     config
         .validate_for_dictation()
         .map_err(|error| error.to_string())?;
+    if state.is_active() {
+        debug!("ignored duplicate dictation start request");
+        return Ok(());
+    }
+
+    let session_id = Uuid::new_v4().to_string();
+    let session_span = info_span!("dictation_session", session_id = %session_id);
+    let session_guard = session_span.enter();
+    let diagnostics =
+        match DiagnosticSession::start(app, &session_id, &config, asr::CAPTURE_TAIL_MS) {
+            Ok(diagnostics) => Some(diagnostics),
+            Err(error) => {
+                warn!(%error, "failed to create diagnostic session; dictation will continue");
+                None
+            }
+        };
+
     info!(
         mode = ?config.interaction_mode,
         microphone = if config.microphone.is_empty() { "system-default" } else { &config.microphone },
@@ -115,16 +138,38 @@ pub fn begin(app: &AppHandle) -> Result<(), String> {
     {
         let mut session = lock(&state.session);
         if session.is_some() {
+            if let Some(diagnostics) = &diagnostics {
+                diagnostics.fail("duplicate dictation session start");
+            }
             debug!("ignored duplicate dictation start request");
             return Ok(());
         }
         *session = Some(ActiveSession {
+            session_id: session_id.clone(),
             stop_sender: Some(stop_sender),
+            diagnostics: diagnostics.clone(),
         });
     }
 
+    let (audio_sender, audio_receiver) = tokio::sync::mpsc::unbounded_channel();
+    let diagnostic_audio = diagnostics.as_ref().map(DiagnosticSession::audio_sink);
+    let capture = match AudioCapture::start(&config.microphone, audio_sender, diagnostic_audio) {
+        Ok(capture) => capture,
+        Err(error) => {
+            *lock(&state.session) = None;
+            if let Some(diagnostics) = &diagnostics {
+                diagnostics.fail(&error.to_string());
+            }
+            error!(%error, "failed to start microphone capture");
+            return Err(error.to_string());
+        }
+    };
+
     if let Err(error) = show_dictation_window(app) {
         *lock(&state.session) = None;
+        if let Some(diagnostics) = &diagnostics {
+            diagnostics.fail(&error);
+        }
         error!(%error, "failed to show dictation window");
         return Err(error);
     }
@@ -139,30 +184,50 @@ pub fn begin(app: &AppHandle) -> Result<(), String> {
     );
 
     let app_handle = app.clone();
-    tauri::async_runtime::spawn(async move {
-        if let Err(panic) = AssertUnwindSafe(run_session(app_handle.clone(), config, stop_receiver))
+    let panic_diagnostics = diagnostics.clone();
+    drop(session_guard);
+    tauri::async_runtime::spawn(
+        async move {
+            if let Err(panic) = AssertUnwindSafe(run_session(
+                app_handle.clone(),
+                session_id,
+                config,
+                stop_receiver,
+                capture,
+                audio_receiver,
+                diagnostics,
+            ))
             .catch_unwind()
             .await
-        {
-            recover_from_session_panic(&app_handle, panic.as_ref());
+            {
+                recover_from_session_panic(&app_handle, panic.as_ref(), panic_diagnostics.as_ref());
+            }
         }
-    });
+        .instrument(session_span),
+    );
     Ok(())
 }
 
 pub fn stop(app: &AppHandle) -> Result<(), String> {
     let state = app.state::<AppState>();
-    let sender = {
+    let (sender, session_id, diagnostics) = {
         let mut session = lock(&state.session);
         let Some(active) = session.as_mut() else {
             debug!("ignored dictation stop request because no session is active");
             return Ok(());
         };
-        active.stop_sender.take()
+        (
+            active.stop_sender.take(),
+            active.session_id.clone(),
+            active.diagnostics.clone(),
+        )
     };
 
     if let Some(sender) = sender {
-        info!("dictation stop signal sent");
+        if let Some(diagnostics) = &diagnostics {
+            diagnostics.mark_released();
+        }
+        info!(%session_id, "dictation stop signal sent");
         let _ = sender.send(());
         let current = state.runtime_snapshot();
         publish_runtime(
@@ -204,9 +269,24 @@ pub fn report_shortcut_error(app: &AppHandle, error: impl Into<String>) {
     });
 }
 
-async fn run_session(app: AppHandle, config: AppConfig, stop_receiver: oneshot::Receiver<()>) {
+async fn run_session(
+    app: AppHandle,
+    session_id: String,
+    config: AppConfig,
+    stop_receiver: oneshot::Receiver<()>,
+    capture: AudioCapture,
+    audio_receiver: tokio::sync::mpsc::UnboundedReceiver<AudioEvent>,
+    diagnostics: Option<DiagnosticSession>,
+) {
     let (event_sender, mut event_receiver) = tokio::sync::mpsc::unbounded_channel();
-    let recognition = asr::recognize(config.clone(), stop_receiver, event_sender);
+    let recognition = asr::recognize(
+        config.clone(),
+        session_id,
+        stop_receiver,
+        event_sender,
+        capture,
+        audio_receiver,
+    );
     tokio::pin!(recognition);
 
     let result = loop {
@@ -214,7 +294,7 @@ async fn run_session(app: AppHandle, config: AppConfig, stop_receiver: oneshot::
             result = &mut recognition => break result,
             event = event_receiver.recv() => {
                 if let Some(event) = event {
-                    handle_stream_event(&app, event);
+                    handle_stream_event(&app, event, diagnostics.as_ref());
                 }
             }
         }
@@ -223,6 +303,9 @@ async fn run_session(app: AppHandle, config: AppConfig, stop_receiver: oneshot::
     match result {
         Ok(text) if !text.trim().is_empty() => {
             let text = text.trim().to_owned();
+            if let Some(diagnostics) = &diagnostics {
+                diagnostics.mark_final(&text);
+            }
             info!(
                 characters = text.chars().count(),
                 "final ASR transcript received"
@@ -251,24 +334,29 @@ async fn run_session(app: AppHandle, config: AppConfig, stop_receiver: oneshot::
             })
             .await;
 
-            let message = match insertion {
+            let (message, insertion_status, insertion_error) = match insertion {
                 Ok(Ok(())) if config.auto_insert => {
                     info!("transcript inserted at active cursor");
-                    "Inserted at the active cursor".to_owned()
+                    ("Inserted at the active cursor".to_owned(), "inserted", None)
                 }
                 Ok(Ok(())) => {
                     info!("transcript copied to clipboard");
-                    "Copied to the clipboard".to_owned()
+                    ("Copied to the clipboard".to_owned(), "copied", None)
                 }
                 Ok(Err(error)) => {
                     warn!(%error, "transcript insertion failed after ASR completed");
-                    error.to_string()
+                    let detail = error.to_string();
+                    (detail.clone(), "failed", Some(detail))
                 }
                 Err(error) => {
                     error!(%error, "text insertion worker failed");
-                    format!("text insertion task failed: {error}")
+                    let detail = format!("text insertion task failed: {error}");
+                    (detail.clone(), "failed", Some(detail))
                 }
             };
+            if let Some(diagnostics) = &diagnostics {
+                diagnostics.complete(insertion_status, insertion_error.as_deref());
+            }
             publish_runtime(
                 &app,
                 RuntimeSnapshot {
@@ -277,9 +365,13 @@ async fn run_session(app: AppHandle, config: AppConfig, stop_receiver: oneshot::
                     message,
                 },
             );
-            finish_session_after(&app, Duration::from_millis(1_100)).await;
+            finish_session_after(&app, COMPLETION_STATUS_DURATION).await;
         }
         Ok(_) => {
+            if let Some(diagnostics) = &diagnostics {
+                diagnostics.mark_final("");
+                diagnostics.complete("not_attempted", None);
+            }
             info!("ASR session completed without detected speech");
             publish_runtime(
                 &app,
@@ -289,9 +381,12 @@ async fn run_session(app: AppHandle, config: AppConfig, stop_receiver: oneshot::
                     message: "No speech detected".to_owned(),
                 },
             );
-            finish_session_after(&app, Duration::from_millis(1_100)).await;
+            finish_session_after(&app, COMPLETION_STATUS_DURATION).await;
         }
         Err(error) => {
+            if let Some(diagnostics) = &diagnostics {
+                diagnostics.fail(&error.to_string());
+            }
             error!(%error, "dictation session failed");
             publish_runtime(
                 &app,
@@ -306,10 +401,17 @@ async fn run_session(app: AppHandle, config: AppConfig, stop_receiver: oneshot::
     }
 }
 
-fn handle_stream_event(app: &AppHandle, event: StreamEvent) {
+fn handle_stream_event(
+    app: &AppHandle,
+    event: StreamEvent,
+    diagnostics: Option<&DiagnosticSession>,
+) {
     let state = app.state::<AppState>();
     match event {
         StreamEvent::Connected => {
+            if let Some(diagnostics) = diagnostics {
+                diagnostics.mark_connected();
+            }
             info!("ASR stream connected");
             let current = state.runtime_snapshot();
             publish_runtime(
@@ -322,6 +424,9 @@ fn handle_stream_event(app: &AppHandle, event: StreamEvent) {
             );
         }
         StreamEvent::Transcript(transcript) => {
+            if let Some(diagnostics) = diagnostics {
+                diagnostics.record_transcript(&transcript);
+            }
             debug!(
                 characters = transcript.chars().count(),
                 "partial ASR transcript updated"
@@ -351,7 +456,11 @@ fn publish_runtime(app: &AppHandle, snapshot: RuntimeSnapshot) {
     let _ = app.emit(RUNTIME_EVENT, snapshot);
 }
 
-fn recover_from_session_panic(app: &AppHandle, panic: &(dyn Any + Send)) {
+fn recover_from_session_panic(
+    app: &AppHandle,
+    panic: &(dyn Any + Send),
+    diagnostics: Option<&DiagnosticSession>,
+) {
     let detail = if let Some(message) = panic.downcast_ref::<String>() {
         message.clone()
     } else if let Some(message) = panic.downcast_ref::<&str>() {
@@ -359,6 +468,9 @@ fn recover_from_session_panic(app: &AppHandle, panic: &(dyn Any + Send)) {
     } else {
         "unknown panic payload".to_owned()
     };
+    if let Some(diagnostics) = diagnostics {
+        diagnostics.fail(&format!("dictation worker panicked: {detail}"));
+    }
     error!(%detail, "dictation worker panicked; session state recovered");
     *lock(&app.state::<AppState>().session) = None;
     publish_runtime(
@@ -390,7 +502,36 @@ fn show_dictation_window(app: &AppHandle) -> Result<(), String> {
         .set_ignore_cursor_events(true)
         .map_err(|error| format!("failed to make the dictation window click-through: {error}"))?;
 
-    if let Ok(Some(monitor)) = window.current_monitor() {
+    let target_monitor = platform::focused_window_center()
+        .and_then(|(x, y)| window.monitor_from_point(x, y).ok().flatten())
+        .map(|monitor| (monitor, "focused-window"))
+        .or_else(|| {
+            window
+                .cursor_position()
+                .ok()
+                .and_then(|position| {
+                    window
+                        .monitor_from_point(position.x, position.y)
+                        .ok()
+                        .flatten()
+                })
+                .map(|monitor| (monitor, "cursor"))
+        })
+        .or_else(|| {
+            window
+                .current_monitor()
+                .ok()
+                .flatten()
+                .map(|monitor| (monitor, "overlay"))
+        });
+
+    if let Some((monitor, source)) = target_monitor {
+        debug!(
+            source,
+            monitor = ?monitor.name(),
+            position = ?monitor.position(),
+            "positioning dictation overlay"
+        );
         let monitor_position = monitor.position();
         let monitor_size = monitor.size();
         if let Ok(window_size) = window.outer_size() {

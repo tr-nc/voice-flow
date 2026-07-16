@@ -27,7 +27,7 @@ Modes:
 - `current`: production optimized bidirectional endpoint (`bigmodel_async`) with ASR second-pass recognition enabled.
 - `nostream`: higher-accuracy streaming-input endpoint (`bigmodel_nostream`).
 
-The tool decodes every source to the same 16 kHz mono signed 16-bit PCM stream and sends each 200 ms packet when that audio would become available in real time. It reports the following independent scores and the raw measurements behind them:
+The tool decodes every source to the same 16 kHz mono signed 16-bit PCM stream, removes only leading and trailing silence, then adds the same 200 ms edge guards used by production. Trimming the fixture first stress-tests speech that begins and ends directly at the push-to-talk boundary; the explicit guards keep provider framing consistent without relying on accidental silence in a recording. Each 200 ms packet is sent when that audio would become available in real time. The tool reports the following independent scores and the raw measurements behind them:
 
 - **Accuracy**: `max(0, 100 - CER)`. CER ignores case, spaces, hyphens, and punctuation. Substitutions, insertions, and deletions are reported separately.
 - **Live responsiveness**: the mean of first-text lag and P95 provisional-update lag. A lag of at most 500 ms scores 100; 2500 ms or more scores zero, with linear interpolation between them. This is not applicable to `nostream`.
