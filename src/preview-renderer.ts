@@ -15,7 +15,6 @@ type RenderedToken = PreviewToken & {
 
 type RevisionMark = {
   element: HTMLSpanElement;
-  anchor: HTMLSpanElement | undefined;
 };
 
 type CorrectionTransition = {
@@ -30,18 +29,18 @@ export type PreviewRendererOptions = {
   revisionGhostLimit?: number;
   revisionStrikeDuration?: number;
   revisionReplaceDuration?: number;
-  onLayoutChange?: () => void;
 };
 
 /** DOM implementation for PreviewFrame. It deliberately knows nothing about ASR. */
 export class PreviewRenderer {
+  private readonly root: HTMLElement;
   private readonly content: HTMLSpanElement;
+  private readonly revisionLayer: HTMLSpanElement;
   private readonly announcement: HTMLSpanElement;
   private readonly animationWindow: number;
   private readonly revisionGhostLimit: number;
   private readonly revisionStrikeDuration: number;
   private readonly revisionReplaceDuration: number;
-  private readonly onLayoutChange: (() => void) | undefined;
   private readonly reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
   private readonly supportsWebAnimations = typeof Element.prototype.animate === "function";
   private rendered: RenderedToken[] = [];
@@ -51,19 +50,24 @@ export class PreviewRenderer {
   private announcedText = "";
 
   constructor(root: HTMLElement, options: PreviewRendererOptions = {}) {
+    this.root = root;
     this.animationWindow = options.animationWindow ?? 18;
     this.revisionGhostLimit = options.revisionGhostLimit ?? 12;
     this.revisionStrikeDuration = options.revisionStrikeDuration ?? 420;
     this.revisionReplaceDuration = options.revisionReplaceDuration ?? 180;
-    this.onLayoutChange = options.onLayoutChange;
     this.content = document.createElement("span");
     this.content.className = "preview-content";
     this.content.setAttribute("aria-hidden", "true");
+    this.revisionLayer = document.createElement("span");
+    this.revisionLayer.className = "preview-revision-layer";
+    this.revisionLayer.setAttribute("aria-hidden", "true");
+    root.addEventListener("scroll", () => this.pinRevisionLayer());
     this.announcement = document.createElement("span");
     this.announcement.className = "preview-sr-text";
     this.announcement.setAttribute("aria-live", "polite");
     this.announcement.setAttribute("aria-atomic", "true");
-    root.replaceChildren(this.content, this.announcement);
+    root.replaceChildren(this.content, this.revisionLayer, this.announcement);
+    this.pinRevisionLayer();
   }
 
   render(frame: PreviewFrame): void {
@@ -79,6 +83,8 @@ export class PreviewRenderer {
     const matches = matchPreviewTokens(this.rendered, nextTokens);
     const animatedStart = Math.max(0, nextTokens.length - this.animationWindow);
     const oldPositions = this.measurePositions(this.rendered);
+    const rootRect = this.root.getBoundingClientRect();
+    this.pinRevisionLayer();
 
     const nextRendered = nextTokens.map((token, nextIndex) => {
       const previousIndex = matches[nextIndex];
@@ -98,13 +104,7 @@ export class PreviewRenderer {
         const previous = this.rendered.slice(run.previousStart, run.previousEnd);
         if (!previous.some((token) => !token.whitespace)) continue;
 
-        const anchor = nextRendered[run.nextStart]?.element;
-        const removedElements = new Set(previous.map(({ element }) => element));
-        this.revisionMarks.forEach((mark) => {
-          if (mark.anchor && removedElements.has(mark.anchor)) mark.anchor = anchor;
-        });
-
-        const transition = this.addRevisionRun(previous, anchor);
+        const transition = this.addRevisionRun(previous, oldPositions, rootRect);
         for (let index = run.nextStart; index < run.nextEnd; index += 1) {
           if (!nextRendered[index].whitespace) correctionInsertions.add(index);
         }
@@ -122,12 +122,14 @@ export class PreviewRenderer {
 
     if (this.animationsEnabled()) {
       correctionTransitions.forEach(({ start, end, replaceAfter, marks }) => {
-        // Old and corrected widths share one timeline, so replacement never
-        // creates a temporary double-width run that can wrap onto two lines.
         marks.forEach((mark) => this.removeRevisionMark(mark, true, replaceAfter));
         this.animateCorrectionInsertions(nextRendered, start, end, replaceAfter);
       });
-      this.animateLayout(nextRendered, oldPositions, animatedStart);
+      // A correction already has its own visual transition. Moving stable
+      // tokens between line boxes at the same time makes the grid feel loose.
+      if (correctionTransitions.length === 0) {
+        this.animateLayout(nextRendered, oldPositions, animatedStart);
+      }
       this.animateInsertions(nextRendered, matches, animatedStart, correctionInsertions);
     }
 
@@ -179,23 +181,12 @@ export class PreviewRenderer {
   }
 
   private reconcileContent(tokens: readonly RenderedToken[]): void {
-    const desiredNodes: HTMLSpanElement[] = [];
-    tokens.forEach(({ element }) => {
-      this.revisionMarks.forEach((mark) => {
-        if (mark.anchor === element) desiredNodes.push(mark.element);
-      });
-      desiredNodes.push(element);
-    });
-    this.revisionMarks.forEach((mark) => {
-      if (!mark.anchor) desiredNodes.push(mark.element);
-    });
-
     let cursor = this.content.firstChild;
-    for (const node of desiredNodes) {
-      if (cursor === node) {
+    for (const { element } of tokens) {
+      if (cursor === element) {
         cursor = cursor.nextSibling;
       } else {
-        this.content.insertBefore(node, cursor);
+        this.content.insertBefore(element, cursor);
       }
     }
     while (cursor) {
@@ -253,39 +244,39 @@ export class PreviewRenderer {
 
   private addRevisionRun(
     tokens: readonly RenderedToken[],
-    anchor: HTMLSpanElement | undefined,
+    positions: ReadonlyMap<number, DOMRect>,
+    rootRect: DOMRect,
   ): { replaceAfter: number; marks: readonly RevisionMark[] } {
     if (this.revisionGhostLimit === 0) return { replaceAfter: 0, marks: [] };
     const firstText = tokens.findIndex((token) => !token.whitespace);
     let lastText = tokens.length - 1;
     while (lastText >= 0 && tokens[lastText].whitespace) lastText -= 1;
     if (firstText < 0 || lastText < firstText) return { replaceAfter: 0, marks: [] };
-    const visibleTokens = tokens.slice(firstText, lastText + 1);
+    const visibleTokens = tokens.slice(firstText, lastText + 1).filter((token) => !token.whitespace);
     const drawableLength = visibleTokens.reduce(
-      (length, token) => length + (token.whitespace ? 0 : Math.max(1, Array.from(token.text).length)),
+      (length, token) => length + Math.max(1, Array.from(token.text).length),
       0,
     );
     let strikeDelay = 0;
     const newMarks: RevisionMark[] = [];
 
     visibleTokens.forEach((token) => {
+      const rect = positions.get(token.id);
+      if (!rect || rect.bottom < rootRect.top || rect.top > rootRect.bottom) return;
       const markElement = document.createElement("span");
-      markElement.className = [
-        "preview-revision-ghost",
-        token.whitespace ? "preview-revision-ghost--whitespace" : "",
-      ]
-        .filter(Boolean)
-        .join(" ");
+      markElement.className = "preview-revision-ghost";
       markElement.setAttribute("aria-hidden", "true");
       markElement.textContent = token.text;
+      markElement.style.left = `${rect.left - rootRect.left}px`;
+      markElement.style.top = `${rect.top - rootRect.top}px`;
+      markElement.style.width = `${rect.width}px`;
+      markElement.style.height = `${rect.height}px`;
 
-      if (!token.whitespace) {
-        const weight = Math.max(1, Array.from(token.text).length) / drawableLength;
-        const duration = Math.max(70, Math.round(this.revisionStrikeDuration * weight));
-        markElement.style.setProperty("--revision-strike-delay", `${strikeDelay}ms`);
-        markElement.style.setProperty("--revision-strike-duration", `${duration}ms`);
-        strikeDelay += duration;
-      }
+      const weight = Math.max(1, Array.from(token.text).length) / drawableLength;
+      const duration = Math.max(70, Math.round(this.revisionStrikeDuration * weight));
+      markElement.style.setProperty("--revision-strike-delay", `${strikeDelay}ms`);
+      markElement.style.setProperty("--revision-strike-duration", `${duration}ms`);
+      strikeDelay += duration;
 
       while (this.revisionMarks.length >= this.revisionGhostLimit) {
         const oldest = this.revisionMarks[0];
@@ -294,10 +285,10 @@ export class PreviewRenderer {
 
       const mark: RevisionMark = {
         element: markElement,
-        anchor,
       };
       this.revisionMarks.push(mark);
       newMarks.push(mark);
+      this.revisionLayer.append(markElement);
     });
     return {
       replaceAfter: strikeDelay,
@@ -314,16 +305,10 @@ export class PreviewRenderer {
     for (let index = start; index < end; index += 1) {
       const token = tokens[index];
       if (token.whitespace) continue;
-      const targetWidth = token.element.getBoundingClientRect().width;
       const animation = token.element.animate(
         [
-          { width: "0px", maxWidth: "0px", opacity: 0, clipPath: "inset(0 100% 0 0)" },
-          {
-            width: `${targetWidth}px`,
-            maxWidth: `${targetWidth}px`,
-            opacity: 1,
-            clipPath: "inset(0 0 0 0)",
-          },
+          { opacity: 0, clipPath: "inset(0 100% 0 0)" },
+          { opacity: 1, clipPath: "inset(0 0 0 0)" },
         ],
         {
           delay: revealAfter,
@@ -332,7 +317,7 @@ export class PreviewRenderer {
           fill: "backwards",
         },
       );
-      animation.finished.then(() => this.onLayoutChange?.()).catch(() => undefined);
+      animation.finished.catch(() => undefined);
     }
   }
 
@@ -341,22 +326,16 @@ export class PreviewRenderer {
       if (!this.revisionMarks.includes(mark)) return;
       mark.element.remove();
       this.revisionMarks = this.revisionMarks.filter((candidate) => candidate !== mark);
-      this.onLayoutChange?.();
     };
     if (!animate || !mark.element.isConnected || !this.animationsEnabled()) {
       finish();
       return;
     }
 
-    const width = mark.element.getBoundingClientRect().width;
     const animation = mark.element.animate(
       [
-        {
-          width: `${width}px`,
-          opacity: 0.68,
-          clipPath: "inset(0 0 0 0)",
-        },
-        { width: "0px", opacity: 0, clipPath: "inset(0 100% 0 0)" },
+        { opacity: 0.68, clipPath: "inset(0 0 0 0)" },
+        { opacity: 0, clipPath: "inset(0 100% 0 0)" },
       ],
       {
         delay,
@@ -366,6 +345,10 @@ export class PreviewRenderer {
       },
     );
     animation.finished.then(finish).catch(finish);
+  }
+
+  private pinRevisionLayer(): void {
+    this.revisionLayer.style.transform = `translate(${this.root.scrollLeft}px, ${this.root.scrollTop}px)`;
   }
 
   private animationsEnabled(): boolean {

@@ -363,7 +363,7 @@ async function mountDictationOverlay(root: HTMLDivElement) {
     });
   };
 
-  const preview = new PreviewRenderer(transcript, { onLayoutChange: updateOverlayLayout });
+  const preview = new PreviewRenderer(transcript);
 
   const applyRuntime = (next: RuntimeSnapshot) => {
     pendingPreview = toPreviewFrame(next.transcript, next.segments ?? []);

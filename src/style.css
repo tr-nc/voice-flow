@@ -549,20 +549,28 @@ html.overlay-root {
   display: inline;
 }
 
+.preview-revision-layer {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: block;
+  overflow: hidden;
+  border-radius: inherit;
+  pointer-events: none;
+}
+
 .preview-revision-ghost {
-  position: relative;
-  display: inline-block;
-  /* Non-visible overflow changes an inline block's baseline to its bottom edge. */
-  overflow: visible;
+  position: absolute;
+  display: block;
+  overflow: hidden;
   color: var(--preview-revision-color);
   line-height: inherit;
   opacity: 0.68;
   pointer-events: none;
-  vertical-align: baseline;
   white-space: pre-wrap;
 }
 
-.preview-revision-ghost:not(.preview-revision-ghost--whitespace)::after {
+.preview-revision-ghost::after {
   position: absolute;
   top: 52%;
   left: 0;
