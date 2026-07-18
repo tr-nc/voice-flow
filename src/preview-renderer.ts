@@ -39,7 +39,7 @@ export class PreviewRenderer {
     this.animationWindow = options.animationWindow ?? 18;
     this.revisionGhostLimit = options.revisionGhostLimit ?? 12;
     this.stateTransitionDurationMs =
-      options.stateTransitionDurationMs ?? cssTimeInMs(root, "--preview-state-transition", 460);
+      options.stateTransitionDurationMs ?? cssTimeInMs(root, "--preview-state-transition", 520);
     this.content = document.createElement("span");
     this.content.className = "preview-content";
     this.content.setAttribute("aria-hidden", "true");

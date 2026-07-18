@@ -470,9 +470,9 @@ select:focus-visible {
   --preview-floating-color: #87533f;
   --preview-grounded-color: #49604b;
   --preview-revision-color: #9f6d59;
-  --preview-floating-lift: -2.5px;
-  --preview-state-transition: 460ms;
-  --preview-drift-duration: 3400ms;
+  --preview-floating-lift: -3px;
+  --preview-state-transition: 520ms;
+  --preview-drift-duration: 2800ms;
 
   position: relative;
   width: 100%;
@@ -601,15 +601,15 @@ select:focus-visible {
   }
 
   12.5% {
-    transform: translateY(-0.78px);
+    transform: translateY(-1.41px);
   }
 
   25% {
-    transform: translateY(-1.1px);
+    transform: translateY(-2px);
   }
 
   37.5% {
-    transform: translateY(-0.78px);
+    transform: translateY(-1.41px);
   }
 
   50% {
@@ -617,15 +617,15 @@ select:focus-visible {
   }
 
   62.5% {
-    transform: translateY(0.78px);
+    transform: translateY(1.41px);
   }
 
   75% {
-    transform: translateY(1.1px);
+    transform: translateY(2px);
   }
 
   87.5% {
-    transform: translateY(0.78px);
+    transform: translateY(1.41px);
   }
 }
 
