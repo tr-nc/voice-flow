@@ -6,12 +6,12 @@ use std::time::Duration;
 
 use futures_util::FutureExt;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition};
+use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize};
 use tokio::sync::oneshot;
 use tracing::{Instrument, debug, error, info, info_span, warn};
 use uuid::Uuid;
 
-use crate::asr::{self, StreamEvent};
+use crate::asr::{self, StreamEvent, TranscriptSegment};
 use crate::audio::{AudioCapture, AudioEvent};
 use crate::config::{AppConfig, InteractionMode};
 use crate::diagnostics::DiagnosticSession;
@@ -20,6 +20,9 @@ use crate::shortcut::ShortcutBinding;
 
 const RUNTIME_EVENT: &str = "voice-flow://runtime";
 const COMPLETION_STATUS_DURATION: Duration = Duration::from_millis(150);
+const DICTATION_MIN_HEIGHT: u32 = 72;
+const DICTATION_MAX_HEIGHT: u32 = 280;
+const DICTATION_BOTTOM_MARGIN: f64 = 92.0;
 #[cfg(target_os = "linux")]
 const LINUX_FOCUS_RETURN_DELAY: Duration = Duration::from_millis(120);
 
@@ -56,6 +59,7 @@ struct ActiveSession {
 pub struct RuntimeSnapshot {
     pub phase: String,
     pub transcript: String,
+    pub segments: Vec<TranscriptSegment>,
     pub message: String,
 }
 
@@ -64,6 +68,7 @@ impl RuntimeSnapshot {
         Self {
             phase: "idle".to_owned(),
             transcript: String::new(),
+            segments: Vec::new(),
             message: "Ready".to_owned(),
         }
     }
@@ -181,6 +186,7 @@ pub fn begin(app: &AppHandle) -> Result<(), String> {
         RuntimeSnapshot {
             phase: "connecting".to_owned(),
             transcript: String::new(),
+            segments: Vec::new(),
             message: microphone_message(&config),
         },
     );
@@ -237,6 +243,7 @@ pub fn stop(app: &AppHandle) -> Result<(), String> {
             RuntimeSnapshot {
                 phase: "finalizing".to_owned(),
                 transcript: current.transcript,
+                segments: current.segments,
                 message: "Finishing the transcript…".to_owned(),
             },
         );
@@ -260,6 +267,7 @@ pub fn report_shortcut_error(app: &AppHandle, error: impl Into<String>) {
         RuntimeSnapshot {
             phase: "error".to_owned(),
             transcript: String::new(),
+            segments: Vec::new(),
             message,
         },
     );
@@ -317,6 +325,7 @@ async fn run_session(
                 RuntimeSnapshot {
                     phase: "inserting".to_owned(),
                     transcript: text.clone(),
+                    segments: final_segments(&text),
                     message: if config.auto_insert {
                         "Inserting at the active cursor…".to_owned()
                     } else {
@@ -376,6 +385,7 @@ async fn run_session(
                 &app,
                 RuntimeSnapshot {
                     phase: "complete".to_owned(),
+                    segments: final_segments(&text),
                     transcript: text,
                     message,
                 },
@@ -393,6 +403,7 @@ async fn run_session(
                 RuntimeSnapshot {
                     phase: "complete".to_owned(),
                     transcript: String::new(),
+                    segments: Vec::new(),
                     message: "No speech detected".to_owned(),
                 },
             );
@@ -408,6 +419,7 @@ async fn run_session(
                 RuntimeSnapshot {
                     phase: "error".to_owned(),
                     transcript: String::new(),
+                    segments: Vec::new(),
                     message: error.to_string(),
                 },
             );
@@ -429,29 +441,43 @@ fn handle_stream_event(
             }
             info!("ASR stream connected");
             let current = state.runtime_snapshot();
+            let finalizing = current.phase == "finalizing";
             publish_runtime(
                 app,
                 RuntimeSnapshot {
-                    phase: "listening".to_owned(),
+                    phase: stream_phase(&current.phase).to_owned(),
                     transcript: current.transcript,
-                    message: "Listening · release or press again to insert".to_owned(),
+                    segments: current.segments,
+                    message: if finalizing {
+                        "Finishing the transcript…".to_owned()
+                    } else {
+                        "Listening · release or press again to insert".to_owned()
+                    },
                 },
             );
         }
-        StreamEvent::Transcript(transcript) => {
+        StreamEvent::Transcript(update) => {
             if let Some(diagnostics) = diagnostics {
-                diagnostics.record_transcript(&transcript);
+                diagnostics.record_transcript(&update.text);
             }
             debug!(
-                characters = transcript.chars().count(),
+                characters = update.text.chars().count(),
+                segments = update.segments.len(),
                 "partial ASR transcript updated"
             );
+            let current = state.runtime_snapshot();
+            let finalizing = current.phase == "finalizing";
             publish_runtime(
                 app,
                 RuntimeSnapshot {
-                    phase: "listening".to_owned(),
-                    transcript,
-                    message: "Live transcription".to_owned(),
+                    phase: stream_phase(&current.phase).to_owned(),
+                    transcript: update.text,
+                    segments: update.segments,
+                    message: if finalizing {
+                        "Finishing the transcript…".to_owned()
+                    } else {
+                        "Live transcription".to_owned()
+                    },
                 },
             );
         }
@@ -469,6 +495,21 @@ async fn finish_session_after(app: &AppHandle, delay: Duration) {
 fn publish_runtime(app: &AppHandle, snapshot: RuntimeSnapshot) {
     *lock(&app.state::<AppState>().runtime) = snapshot.clone();
     let _ = app.emit(RUNTIME_EVENT, snapshot);
+}
+
+fn final_segments(text: &str) -> Vec<TranscriptSegment> {
+    vec![TranscriptSegment {
+        text: text.to_owned(),
+        definite: true,
+    }]
+}
+
+fn stream_phase(current_phase: &str) -> &'static str {
+    if current_phase == "finalizing" {
+        "finalizing"
+    } else {
+        "listening"
+    }
 }
 
 fn recover_from_session_panic(
@@ -493,6 +534,7 @@ fn recover_from_session_panic(
         RuntimeSnapshot {
             phase: "error".to_owned(),
             transcript: String::new(),
+            segments: Vec::new(),
             message: format!("Dictation worker failed: {detail}"),
         },
     );
@@ -552,7 +594,7 @@ fn show_dictation_window(app: &AppHandle) -> Result<(), String> {
         if let Ok(window_size) = window.outer_size() {
             let x = monitor_position.x
                 + ((monitor_size.width.saturating_sub(window_size.width)) / 2) as i32;
-            let bottom_margin = (92.0 * monitor.scale_factor()) as i32;
+            let bottom_margin = (DICTATION_BOTTOM_MARGIN * monitor.scale_factor()) as i32;
             let y = monitor_position.y + monitor_size.height as i32
                 - window_size.height as i32
                 - bottom_margin;
@@ -570,6 +612,43 @@ fn show_dictation_window(app: &AppHandle) -> Result<(), String> {
     if let Err(error) = window.set_ignore_cursor_events(true) {
         warn!(%error, "the Linux window manager cannot make the dictation overlay click-through");
     }
+    Ok(())
+}
+
+pub fn resize_dictation_overlay(app: &AppHandle, height: u32) -> Result<(), String> {
+    let window = app
+        .get_webview_window("dictation")
+        .ok_or_else(|| "dictation window is unavailable".to_owned())?;
+    let scale_factor = window
+        .scale_factor()
+        .map_err(|error| format!("failed to read the dictation window scale: {error}"))?;
+    let current_size = window
+        .outer_size()
+        .map_err(|error| format!("failed to read the dictation window size: {error}"))?;
+    let logical_height = height.clamp(DICTATION_MIN_HEIGHT, DICTATION_MAX_HEIGHT);
+    let physical_height = (f64::from(logical_height) * scale_factor).round() as u32;
+
+    window
+        .set_size(PhysicalSize::new(current_size.width, physical_height))
+        .map_err(|error| format!("failed to resize the dictation window: {error}"))?;
+
+    if let Some(monitor) = window.current_monitor().unwrap_or_else(|error| {
+        warn!(%error, "the window manager did not report the dictation overlay monitor");
+        None
+    }) {
+        let monitor_position = monitor.position();
+        let monitor_size = monitor.size();
+        let x = monitor_position.x
+            + ((monitor_size.width.saturating_sub(current_size.width)) / 2) as i32;
+        let bottom_margin = (DICTATION_BOTTOM_MARGIN * monitor.scale_factor()) as i32;
+        let y = monitor_position.y + monitor_size.height as i32
+            - physical_height as i32
+            - bottom_margin;
+        if let Err(error) = window.set_position(PhysicalPosition::new(x, y)) {
+            warn!(%error, "the window manager cannot reposition the resized dictation overlay");
+        }
+    }
+
     Ok(())
 }
 
@@ -591,4 +670,16 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stream_phase;
+
+    #[test]
+    fn late_stream_events_do_not_leave_finalizing_phase() {
+        assert_eq!(stream_phase("finalizing"), "finalizing");
+        assert_eq!(stream_phase("listening"), "listening");
+        assert_eq!(stream_phase("connecting"), "listening");
+    }
 }

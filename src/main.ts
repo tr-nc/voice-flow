@@ -30,7 +30,13 @@ type Microphone = {
 type RuntimeSnapshot = {
   phase: RuntimePhase;
   transcript: string;
+  segments: TranscriptSegment[];
   message: string;
+};
+
+type TranscriptSegment = {
+  text: string;
+  definite: boolean;
 };
 
 const app = document.querySelector<HTMLDivElement>("#app");
@@ -310,13 +316,103 @@ async function mountDictationOverlay(root: HTMLDivElement) {
   root.innerHTML = `<p class="dictation-text" aria-live="polite"></p>`;
 
   const transcript = element<HTMLElement>(".dictation-text");
+  const overlayWindow = getCurrentWindow();
+  const minOverlayHeight = 72;
+  const maxOverlayHeight = 280;
+  // Eight pixels around the panel plus its one-pixel border on each side.
+  const overlayVerticalPadding = 18;
+  let layoutFrame: number | undefined;
+  let desiredHeight = minOverlayHeight;
+  let appliedHeight = 0;
+  let resizeInFlight = false;
+  let previousTranscript = "";
+  let previousDefinitePrefix = "";
+
+  const flushOverlayResize = async () => {
+    if (resizeInFlight || desiredHeight === appliedHeight) return;
+    resizeInFlight = true;
+    try {
+      while (desiredHeight !== appliedHeight) {
+        const targetHeight = desiredHeight;
+        await invoke("resize_dictation_overlay", { height: targetHeight });
+        appliedHeight = targetHeight;
+      }
+    } catch (error) {
+      console.error("Failed to resize the dictation overlay:", asMessage(error));
+    } finally {
+      resizeInFlight = false;
+    }
+  };
+
+  const updateOverlayLayout = () => {
+    if (layoutFrame !== undefined) window.cancelAnimationFrame(layoutFrame);
+    layoutFrame = window.requestAnimationFrame(() => {
+      layoutFrame = undefined;
+      desiredHeight = Math.min(
+        maxOverlayHeight,
+        Math.max(minOverlayHeight, Math.ceil(transcript.scrollHeight) + overlayVerticalPadding),
+      );
+      void flushOverlayResize().finally(() => {
+        // When the capped preview overflows, keep the newest recognized words visible.
+        transcript.scrollTop = transcript.scrollHeight;
+      });
+    });
+  };
+
   const applyRuntime = (next: RuntimeSnapshot) => {
-    transcript.textContent = next.transcript;
+    const segments = next.segments ?? [];
+    const boundary = findDefiniteBoundary(next.transcript, segments);
+    const definitePrefix = boundary.active ? next.transcript.slice(0, boundary.offset) : "";
+    const transcriptChanged = next.transcript !== previousTranscript;
+    const definiteChanged = definitePrefix !== previousDefinitePrefix;
+    const leadingText = next.transcript.slice(0, boundary.offset);
+    const trailingText = next.transcript.slice(boundary.offset);
+    const content: Node[] = [];
+
+    if (leadingText) {
+      const leading = document.createElement("span");
+      leading.className = boundary.active ? "dictation-definite" : "dictation-live";
+      if (boundary.active && definiteChanged) leading.classList.add("is-newly-definite");
+      if (!boundary.active && transcriptChanged) leading.classList.add("is-updated");
+      leading.textContent = leadingText;
+      content.push(leading);
+    }
+
+    if (trailingText) {
+      const trailing = document.createElement("span");
+      trailing.className = "dictation-live";
+      if (transcriptChanged) trailing.classList.add("is-updated");
+      trailing.textContent = trailingText;
+      content.push(trailing);
+    }
+
+    transcript.replaceChildren(...content);
+    transcript.dataset.phase = next.phase;
+    previousTranscript = next.transcript;
+    previousDefinitePrefix = definitePrefix;
+    updateOverlayLayout();
   };
 
   const runtime = await invoke<RuntimeSnapshot>("get_runtime").catch(() => undefined);
   if (runtime) applyRuntime(runtime);
   await listen<RuntimeSnapshot>("voice-flow://runtime", ({ payload }) => applyRuntime(payload));
+
+  void overlayWindow.onScaleChanged(updateOverlayLayout);
+}
+
+function findDefiniteBoundary(text: string, segments: TranscriptSegment[]): { offset: number; active: boolean } {
+  if (!text || segments.length === 0) return { offset: text.length, active: false };
+
+  let definitePrefix = "";
+  for (const segment of segments) {
+    if (!segment.definite) break;
+    definitePrefix += segment.text;
+  }
+
+  const safeBoundary = definitePrefix.length > 0 && text.startsWith(definitePrefix);
+  return safeBoundary
+    ? { offset: definitePrefix.length, active: true }
+    : { offset: text.length, active: false };
 }
 
 function populateMicrophones(select: HTMLSelectElement, microphones: Microphone[], selected: string) {

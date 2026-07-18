@@ -4,7 +4,20 @@ use anyhow::{Context, Result, bail};
 use flate2::Compression;
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
+use serde::Serialize;
 use serde_json::Value;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct TranscriptUpdate {
+    pub text: String,
+    pub segments: Vec<TranscriptSegment>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct TranscriptSegment {
+    pub text: String,
+    pub definite: bool,
+}
 
 const VERSION: u8 = 0b0001;
 const HEADER_WORDS: u8 = 0b0001;
@@ -127,6 +140,29 @@ pub fn extract_text(payload: Option<&Value>) -> Option<String> {
     (!joined.is_empty()).then_some(joined)
 }
 
+pub fn extract_transcript(payload: Option<&Value>) -> Option<TranscriptUpdate> {
+    let payload = payload?;
+    let text = extract_text(Some(payload))?;
+    let segments = payload
+        .pointer("/result/utterances")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|utterance| {
+            let text = utterance.get("text").and_then(Value::as_str)?;
+            (!text.is_empty()).then(|| TranscriptSegment {
+                text: text.to_owned(),
+                definite: utterance
+                    .get("definite")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(false),
+            })
+        })
+        .collect();
+
+    Some(TranscriptUpdate { text, segments })
+}
+
 fn header(message_type: u8, flags: u8, serialization: u8, compression: u8) -> Vec<u8> {
     vec![
         (VERSION << 4) | HEADER_WORDS,
@@ -208,5 +244,85 @@ mod tests {
     fn extracts_full_text() {
         let payload = serde_json::json!({ "result": { "text": "实时文字" } });
         assert_eq!(extract_text(Some(&payload)).as_deref(), Some("实时文字"));
+    }
+
+    #[test]
+    fn keeps_canonical_text_and_exposes_utterance_stability() {
+        let payload = serde_json::json!({
+            "result": {
+                "text": "准确全文。",
+                "utterances": [
+                    { "text": "准确", "definite": true },
+                    { "text": "全文", "definite": false }
+                ]
+            }
+        });
+
+        let update = extract_transcript(Some(&payload)).unwrap();
+        assert_eq!(update.text, "准确全文。");
+        assert_eq!(
+            update.segments,
+            vec![
+                TranscriptSegment {
+                    text: "准确".to_owned(),
+                    definite: true,
+                },
+                TranscriptSegment {
+                    text: "全文".to_owned(),
+                    definite: false,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn falls_back_to_joined_utterances_only_without_canonical_text() {
+        let payload = serde_json::json!({
+            "result": {
+                "utterances": [
+                    { "text": "第一句。", "definite": true },
+                    { "text": "第二句。", "definite": false }
+                ]
+            }
+        });
+
+        let update = extract_transcript(Some(&payload)).unwrap();
+        assert_eq!(update.text, "第一句。第二句。");
+        assert_eq!(update.segments.len(), 2);
+    }
+
+    #[test]
+    fn preserves_mismatched_segments_as_metadata_without_overwriting_text() {
+        let payload = serde_json::json!({
+            "result": {
+                "text": "服务端规范全文",
+                "utterances": [{ "text": "不同的分段文本", "definite": true }]
+            }
+        });
+
+        let update = extract_transcript(Some(&payload)).unwrap();
+        assert_eq!(update.text, "服务端规范全文");
+        assert_eq!(update.segments[0].text, "不同的分段文本");
+    }
+
+    #[test]
+    fn stability_change_is_a_distinct_update_when_text_is_unchanged() {
+        let provisional = serde_json::json!({
+            "result": {
+                "text": "相同文字",
+                "utterances": [{ "text": "相同文字", "definite": false }]
+            }
+        });
+        let definite = serde_json::json!({
+            "result": {
+                "text": "相同文字",
+                "utterances": [{ "text": "相同文字", "definite": true }]
+            }
+        });
+
+        assert_ne!(
+            extract_transcript(Some(&provisional)),
+            extract_transcript(Some(&definite))
+        );
     }
 }

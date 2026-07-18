@@ -36,6 +36,15 @@ pub fn initialize() -> Result<()> {
     Ok(())
 }
 
+pub fn initialize_settings_window(window: &tauri::WebviewWindow) {
+    #[cfg(target_os = "linux")]
+    return linux::initialize_settings_window(window);
+    #[cfg(target_os = "macos")]
+    return macos::initialize_settings_window(window);
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    unsupported::initialize_settings_window(window);
+}
+
 pub fn insert_at_active_cursor(text: &str) -> Result<()> {
     CurrentTextInjector.insert_at_active_cursor(text)
 }

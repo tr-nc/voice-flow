@@ -20,6 +20,7 @@
         "minWidth": 360,
         "minHeight": 460,
         "center": true,
+        "create": false,
         "visible": false,
         "resizable": true
       },
@@ -27,8 +28,8 @@
         "label": "dictation",
         "title": "Voice Flow Dictation",
         "url": "index.html?window=dictation",
-        "width": 560,
-        "height": 104,
+        "width": 720,
+        "height": 72,
         "visible": false,
         "focus": false,
         "decorations": false,

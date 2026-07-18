@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "install:local": "sh scripts/install-local.sh",
+    "reinstall:local": "sh scripts/reinstall-local.sh",
     "tauri": "tauri"
   },
   "dependencies": {

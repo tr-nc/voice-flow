@@ -86,6 +86,11 @@ fn stop_dictation(app: AppHandle) -> Result<(), String> {
     result
 }
 
+#[tauri::command]
+fn resize_dictation_overlay(app: AppHandle, height: u32) -> Result<(), String> {
+    controller::resize_dictation_overlay(&app, height)
+}
+
 fn handle_shortcut(app: &AppHandle, shortcut_event: shortcut::ShortcutEvent) {
     let state = app.state::<AppState>();
     debug!(event = ?shortcut_event, mode = ?state.interaction_mode(), "shortcut state changed");
@@ -118,6 +123,26 @@ fn show_settings(app: &AppHandle) {
         let _ = window.show();
         let _ = window.set_focus();
     }
+}
+
+fn setup_settings_window(app: &mut tauri::App) -> tauri::Result<()> {
+    let mut config = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|config| config.label == "main")
+        .cloned()
+        .ok_or(tauri::Error::WindowNotFound)?;
+
+    // tao 0.35 does not correctly initialize Wayland window controls when a
+    // window is created hidden and shown later. Create the Linux settings
+    // window visible from the start while preserving the macOS background-app
+    // behavior.
+    config.visible = !cfg!(target_os = "macos");
+    let window = tauri::WebviewWindowBuilder::from_config(app.handle(), &config)?.build()?;
+    platform::initialize_settings_window(&window);
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -167,13 +192,12 @@ pub fn run() {
         .setup(move |app| {
             #[cfg(target_os = "macos")]
             setup_status_item(app)?;
-            #[cfg(not(target_os = "macos"))]
-            show_settings(app.handle());
 
             let log_path = logging::init(app.handle())?;
             if let Some(workaround) = graphics_workaround {
                 info!(workaround, "applied Linux WebKitGTK graphics workaround");
             }
+            setup_settings_window(app)?;
             asr::install_tls_provider()?;
             let config = config::load(app.handle())?;
             info!(
@@ -197,6 +221,7 @@ pub fn run() {
             save_config,
             start_dictation,
             stop_dictation,
+            resize_dictation_overlay,
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Voice Flow");

@@ -17,6 +17,8 @@ use crate::asr_options::{AUDIO_EDGE_GUARD_MS, CURRENT_ENDPOINT, RESOURCE_ID, VAD
 use crate::audio::{AudioCapture, AudioEvent, TARGET_SAMPLE_RATE};
 use crate::config::AppConfig;
 
+pub use protocol::{TranscriptSegment, TranscriptUpdate};
+
 const AUDIO_PACKET_SAMPLES: usize = 3_200;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const SOCKET_WRITE_TIMEOUT: Duration = Duration::from_secs(5);
@@ -27,7 +29,7 @@ const CAPTURE_TAIL_DURATION: Duration = Duration::from_millis(CAPTURE_TAIL_MS);
 #[derive(Debug)]
 pub enum StreamEvent {
     Connected,
-    Transcript(String),
+    Transcript(TranscriptUpdate),
 }
 
 pub fn install_tls_provider() -> Result<()> {
@@ -119,7 +121,7 @@ pub async fn recognize(
     let edge_guard_samples = TARGET_SAMPLE_RATE as usize * AUDIO_EDGE_GUARD_MS / 1_000;
     let mut sequence = 2;
     let mut pending_samples = vec![0; edge_guard_samples];
-    let mut final_text = String::new();
+    let mut latest_transcript = TranscriptUpdate::default();
 
     if !stop_requested {
         loop {
@@ -143,8 +145,8 @@ pub async fn recognize(
                     }
                 }
                 message = reader.next() => {
-                    if handle_message(message, &mut writer, &events, &mut final_text).await? {
-                        return Ok(final_text);
+                    if handle_message(message, &mut writer, &events, &mut latest_transcript).await? {
+                        return Ok(latest_transcript.text);
                     }
                 }
             }
@@ -175,7 +177,7 @@ pub async fn recognize(
     let final_response = timeout(FINAL_RESPONSE_TIMEOUT, async {
         loop {
             let message = reader.next().await;
-            if handle_message(message, &mut writer, &events, &mut final_text).await? {
+            if handle_message(message, &mut writer, &events, &mut latest_transcript).await? {
                 return Ok::<(), anyhow::Error>(());
             }
         }
@@ -183,7 +185,7 @@ pub async fn recognize(
     .await;
     match final_response {
         Ok(result) => result?,
-        Err(_) if !final_text.is_empty() => {
+        Err(_) if !latest_transcript.text.is_empty() => {
             warn!(
                 wait_ms = final_wait_started.elapsed().as_millis(),
                 "final ASR marker timed out; using the latest transcript"
@@ -193,11 +195,11 @@ pub async fn recognize(
     }
     info!(
         final_wait_ms = final_wait_started.elapsed().as_millis(),
-        characters = final_text.chars().count(),
+        characters = latest_transcript.text.chars().count(),
         "ASR session finalized"
     );
 
-    Ok(final_text)
+    Ok(latest_transcript.text)
 }
 
 async fn finish_capture(capture: &mut Option<AudioCapture>) {
@@ -261,7 +263,7 @@ async fn handle_message<S>(
     message: Option<Result<Message, tokio_tungstenite::tungstenite::Error>>,
     writer: &mut S,
     events: &mpsc::UnboundedSender<StreamEvent>,
-    final_text: &mut String,
+    latest_transcript: &mut TranscriptUpdate,
 ) -> Result<bool>
 where
     S: futures_util::Sink<Message> + Unpin,
@@ -271,11 +273,13 @@ where
         Some(Ok(Message::Binary(data))) => {
             let frame = protocol::parse_server_frame(data.as_ref())?;
             debug!(is_last = frame.is_last, "ASR response frame received");
-            if let Some(text) = protocol::extract_text(frame.payload.as_ref())
-                && text != *final_text
-            {
-                final_text.clone_from(&text);
-                let _ = events.send(StreamEvent::Transcript(text));
+            if let Some(update) = protocol::extract_transcript(frame.payload.as_ref()) {
+                // A second-pass response can keep the exact same canonical text
+                // while changing an utterance from provisional to definite.
+                if update != *latest_transcript {
+                    latest_transcript.clone_from(&update);
+                    let _ = events.send(StreamEvent::Transcript(update));
+                }
             }
             Ok(frame.is_last)
         }

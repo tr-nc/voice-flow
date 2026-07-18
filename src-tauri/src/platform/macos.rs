@@ -12,6 +12,8 @@ use super::TextInjector;
 
 pub struct MacOsTextInjector;
 
+pub fn initialize_settings_window(_window: &tauri::WebviewWindow) {}
+
 pub fn focused_window_center() -> Option<(f64, f64)> {
     // SAFETY: The system-wide AX element is returned with a +1 retain count,
     // which CFRetained manages for the remainder of this function.

@@ -755,9 +755,10 @@ async fn recognize_pcm(
                             let frame = protocol::parse_server_frame(data.as_ref())?;
                             if let Some(payload) = frame.payload.as_ref() {
                                 let utterances = extract_utterances(payload);
-                                if let Some(text) = protocol::extract_text(Some(payload))
-                                    && text != final_text
+                                if let Some(update) = protocol::extract_transcript(Some(payload))
+                                    && update.text != final_text
                                 {
+                                    let text = update.text;
                                     first_text_ms.get_or_insert(arrived_ms);
                                     let source_end_ms = utterances
                                         .iter()

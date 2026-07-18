@@ -57,6 +57,30 @@ npm run tauri dev
 
 The Linux default shortcut is right Control. Automatic insertion uses `wl-copy` plus a virtual `Ctrl+Shift+V` on Wayland, and the X11 clipboard plus the same virtual shortcut on X11. Voice Flow uses this one paste chord for every Linux application without application-specific handling. Enter the Secret Key again on a new computer; local settings are intentionally not synchronized.
 
+## Local install
+
+Voice Flow does not need a release package for personal use. From either macOS or Fedora, build and install the current checkout with:
+
+```bash
+npm run install:local
+```
+
+The command runs a release build and installs only for the current user:
+
+- macOS: `~/Applications/Voice Flow.app`
+- Fedora: `~/.local/bin/voice-flow`, plus an application-menu entry
+
+Run the same command after pulling or making changes to replace the installed build. Settings and credentials remain in the platform config directory and are not touched. If Voice Flow is already running, restart it after installation.
+
+The installer deliberately does not use `sudo` or change operating-system policy. Complete the Linux dependency, `input` group, and `uinput` setup above once. To load `uinput` automatically after future Fedora reboots, run:
+
+```bash
+printf 'uinput\n' | sudo tee /etc/modules-load.d/voice-flow.conf
+sudo modprobe uinput
+```
+
+On macOS, launch the installed application once and grant **Microphone** and **Accessibility** permission to Voice Flow. Development runs launched through a terminal may have separate macOS permission records.
+
 ## Credentials and settings
 
 Enter the VolcEngine **Secret Key** once. It is stored only in the local settings file. The Secret Key, selected microphone, shortcut, interaction mode, and insertion preference are saved automatically whenever they change.

@@ -8,7 +8,8 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use arboard::Clipboard;
 use evdev::{AttributeSet, KeyCode, KeyEvent, uinput::VirtualDevice};
-use tracing::{debug, info};
+use gtk::prelude::*;
+use tracing::{debug, info, warn};
 
 use super::TextInjector;
 
@@ -150,6 +151,46 @@ fn copy_with_arboard(text: &str) -> Result<()> {
 pub fn initialize() -> Result<()> {
     drop(paste_device()?);
     Ok(())
+}
+
+pub fn initialize_settings_window(window: &tauri::WebviewWindow) {
+    if !is_wayland_session() {
+        return;
+    }
+
+    let gtk_window = match window.gtk_window() {
+        Ok(window) => window,
+        Err(error) => {
+            warn!(%error, "could not access the Linux settings window title bar");
+            return;
+        }
+    };
+    let Some(titlebar) = gtk_window.titlebar() else {
+        warn!("Linux settings window has no title bar to initialize");
+        return;
+    };
+    let event_box = match titlebar.downcast::<gtk::EventBox>() {
+        Ok(event_box) => event_box,
+        Err(titlebar) => {
+            warn!(
+                widget_type = %titlebar.type_().name(),
+                "Linux settings window uses an unexpected title bar widget"
+            );
+            return;
+        }
+    };
+
+    // tao 0.35's Wayland title bar places this event box above its HeaderBar,
+    // swallowing clicks on the native window controls until a maximize cycle
+    // happens to restack the input windows. Keep the drag surface but let its
+    // child buttons receive pointer events.
+    let was_above_child = event_box.is_above_child();
+    event_box.set_above_child(false);
+    info!(
+        was_above_child,
+        above_child = event_box.is_above_child(),
+        "initialized clickable Wayland settings window controls"
+    );
 }
 
 fn primary_gpu_is_nvidia() -> bool {

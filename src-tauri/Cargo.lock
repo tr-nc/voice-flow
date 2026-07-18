@@ -4681,6 +4681,7 @@ dependencies = [
  "evdev",
  "flate2",
  "futures-util",
+ "gtk",
  "objc2-application-services",
  "objc2-core-foundation",
  "rustls",
