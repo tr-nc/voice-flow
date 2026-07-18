@@ -1,4 +1,7 @@
-use anyhow::{Context, Result};
+#[cfg(not(target_os = "linux"))]
+use anyhow::Context;
+use anyhow::Result;
+#[cfg(not(target_os = "linux"))]
 use arboard::Clipboard;
 
 pub trait TextInjector {
@@ -45,8 +48,13 @@ pub fn focused_window_center() -> Option<(f64, f64)> {
 }
 
 pub fn copy_to_clipboard(text: &str) -> Result<()> {
-    let mut clipboard = Clipboard::new().context("failed to open the clipboard")?;
-    clipboard
-        .set_text(text.to_owned())
-        .context("failed to copy the transcript")
+    #[cfg(target_os = "linux")]
+    return linux::copy_to_clipboard(text);
+    #[cfg(not(target_os = "linux"))]
+    {
+        let mut clipboard = Clipboard::new().context("failed to open the clipboard")?;
+        clipboard
+            .set_text(text.to_owned())
+            .context("failed to copy the transcript")
+    }
 }

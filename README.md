@@ -36,7 +36,7 @@ On first use, macOS asks for microphone access. Global side-specific shortcut de
 Install the Tauri/WebKit and audio build dependencies. On Fedora:
 
 ```bash
-sudo dnf install gcc gtk3-devel webkit2gtk4.1-devel alsa-lib-devel
+sudo dnf install gcc gtk3-devel webkit2gtk4.1-devel alsa-lib-devel wl-clipboard
 ```
 
 Voice Flow reads Linux input event devices so hold shortcuts and left/right modifiers work under both Wayland and X11. Grant that access once, load the virtual-input module used for automatic paste, then **sign out and back in** so the new group membership takes effect:
@@ -55,7 +55,7 @@ npm install
 npm run tauri dev
 ```
 
-The Linux default shortcut is right Control. Automatic insertion uses the desktop clipboard and a virtual `Shift+Insert`, which works without stealing focus on Wayland and X11. Enter the Secret Key again on a new computer; local settings are intentionally not synchronized.
+The Linux default shortcut is right Control. Automatic insertion uses `wl-copy` plus a virtual `Ctrl+Shift+V` on Wayland, and the X11 clipboard plus the same virtual shortcut on X11. Voice Flow uses this one paste chord for every Linux application without application-specific handling. Enter the Secret Key again on a new computer; local settings are intentionally not synchronized.
 
 ## Credentials and settings
 

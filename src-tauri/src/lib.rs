@@ -155,13 +155,13 @@ pub fn run() {
             show_settings(app);
         }))
         .manage(AppState::default())
-        .on_window_event(|window, event| {
+        .on_window_event(|_window, _event| {
             #[cfg(target_os = "macos")]
-            if window.label() == "main"
-                && let tauri::WindowEvent::CloseRequested { api, .. } = event
+            if _window.label() == "main"
+                && let tauri::WindowEvent::CloseRequested { api, .. } = _event
             {
                 api.prevent_close();
-                let _ = window.hide();
+                let _ = _window.hide();
             }
         })
         .setup(move |app| {
