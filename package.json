@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "test:frontend": "node --experimental-strip-types --test tests/preview-model.test.ts",
     "install:local": "sh scripts/install-local.sh",
     "reinstall:local": "sh scripts/reinstall-local.sh",
     "tauri": "tauri"

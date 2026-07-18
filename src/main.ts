@@ -1,6 +1,8 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { PreviewFrame } from "./preview-model";
+import { PreviewRenderer } from "./preview-renderer";
 import "./style.css";
 
 type InteractionMode = "hold" | "toggle";
@@ -313,20 +315,21 @@ async function mountSettings(root: HTMLDivElement) {
 
 async function mountDictationOverlay(root: HTMLDivElement) {
   document.body.className = "overlay-body";
-  root.innerHTML = `<p class="dictation-text" aria-live="polite"></p>`;
+  root.innerHTML = `<p class="dictation-text"></p>`;
 
   const transcript = element<HTMLElement>(".dictation-text");
+  const preview = new PreviewRenderer(transcript);
   const overlayWindow = getCurrentWindow();
   const minOverlayHeight = 72;
   const maxOverlayHeight = 280;
   // Eight pixels around the panel plus its one-pixel border on each side.
   const overlayVerticalPadding = 18;
   let layoutFrame: number | undefined;
+  let previewFrame: number | undefined;
+  let pendingPreview: PreviewFrame | undefined;
   let desiredHeight = minOverlayHeight;
   let appliedHeight = 0;
   let resizeInFlight = false;
-  let previousTranscript = "";
-  let previousDefinitePrefix = "";
 
   const flushOverlayResize = async () => {
     if (resizeInFlight || desiredHeight === appliedHeight) return;
@@ -360,37 +363,15 @@ async function mountDictationOverlay(root: HTMLDivElement) {
   };
 
   const applyRuntime = (next: RuntimeSnapshot) => {
-    const segments = next.segments ?? [];
-    const boundary = findDefiniteBoundary(next.transcript, segments);
-    const definitePrefix = boundary.active ? next.transcript.slice(0, boundary.offset) : "";
-    const transcriptChanged = next.transcript !== previousTranscript;
-    const definiteChanged = definitePrefix !== previousDefinitePrefix;
-    const leadingText = next.transcript.slice(0, boundary.offset);
-    const trailingText = next.transcript.slice(boundary.offset);
-    const content: Node[] = [];
-
-    if (leadingText) {
-      const leading = document.createElement("span");
-      leading.className = boundary.active ? "dictation-definite" : "dictation-live";
-      if (boundary.active && definiteChanged) leading.classList.add("is-newly-definite");
-      if (!boundary.active && transcriptChanged) leading.classList.add("is-updated");
-      leading.textContent = leadingText;
-      content.push(leading);
-    }
-
-    if (trailingText) {
-      const trailing = document.createElement("span");
-      trailing.className = "dictation-live";
-      if (transcriptChanged) trailing.classList.add("is-updated");
-      trailing.textContent = trailingText;
-      content.push(trailing);
-    }
-
-    transcript.replaceChildren(...content);
-    transcript.dataset.phase = next.phase;
-    previousTranscript = next.transcript;
-    previousDefinitePrefix = definitePrefix;
-    updateOverlayLayout();
+    pendingPreview = runtimeToPreviewFrame(next);
+    if (previewFrame !== undefined) return;
+    previewFrame = window.requestAnimationFrame(() => {
+      previewFrame = undefined;
+      if (!pendingPreview) return;
+      preview.render(pendingPreview);
+      pendingPreview = undefined;
+      updateOverlayLayout();
+    });
   };
 
   const runtime = await invoke<RuntimeSnapshot>("get_runtime").catch(() => undefined);
@@ -398,6 +379,26 @@ async function mountDictationOverlay(root: HTMLDivElement) {
   await listen<RuntimeSnapshot>("voice-flow://runtime", ({ payload }) => applyRuntime(payload));
 
   void overlayWindow.onScaleChanged(updateOverlayLayout);
+}
+
+// The only adapter between runtime recognition data and the presentation-only
+// preview contract. The renderer itself accepts floating/grounded text from any
+// future producer or model.
+function runtimeToPreviewFrame(snapshot: RuntimeSnapshot): PreviewFrame {
+  const boundary = findDefiniteBoundary(snapshot.transcript, snapshot.segments ?? []);
+  if (!snapshot.transcript) return { chunks: [] };
+  if (!boundary.active) {
+    return { chunks: [{ text: snapshot.transcript, treatment: "floating" }] };
+  }
+
+  const grounded = snapshot.transcript.slice(0, boundary.offset);
+  const floating = snapshot.transcript.slice(boundary.offset);
+  return {
+    chunks: [
+      ...(grounded ? [{ text: grounded, treatment: "grounded" as const }] : []),
+      ...(floating ? [{ text: floating, treatment: "floating" as const }] : []),
+    ],
+  };
 }
 
 function findDefiniteBoundary(text: string, segments: TranscriptSegment[]): { offset: number; active: boolean } {
