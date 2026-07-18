@@ -382,21 +382,21 @@ async function mountDictationOverlay(root: HTMLDivElement) {
 }
 
 // The only adapter between runtime recognition data and the presentation-only
-// preview contract. The renderer itself accepts floating/grounded text from any
+// preview contract. The renderer itself accepts processing/settled text from any
 // future producer or model.
 function runtimeToPreviewFrame(snapshot: RuntimeSnapshot): PreviewFrame {
   const boundary = findDefiniteBoundary(snapshot.transcript, snapshot.segments ?? []);
   if (!snapshot.transcript) return { chunks: [] };
   if (!boundary.active) {
-    return { chunks: [{ text: snapshot.transcript, treatment: "floating" }] };
+    return { chunks: [{ text: snapshot.transcript, treatment: "processing" }] };
   }
 
-  const grounded = snapshot.transcript.slice(0, boundary.offset);
-  const floating = snapshot.transcript.slice(boundary.offset);
+  const settled = snapshot.transcript.slice(0, boundary.offset);
+  const processing = snapshot.transcript.slice(boundary.offset);
   return {
     chunks: [
-      ...(grounded ? [{ text: grounded, treatment: "grounded" as const }] : []),
-      ...(floating ? [{ text: floating, treatment: "floating" as const }] : []),
+      ...(settled ? [{ text: settled, treatment: "settled" as const }] : []),
+      ...(processing ? [{ text: processing, treatment: "processing" as const }] : []),
     ],
   };
 }

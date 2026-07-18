@@ -10,33 +10,33 @@ import {
 test("tokenization preserves text and presentation treatment", () => {
   const tokens = tokenizePreviewFrame({
     chunks: [
-      { text: "已经落地。", treatment: "grounded" },
-      { text: " still floating", treatment: "floating" },
+      { text: "已经确定。", treatment: "settled" },
+      { text: " still processing", treatment: "processing" },
     ],
   });
 
-  assert.equal(tokens.map(({ text }) => text).join(""), "已经落地。 still floating");
-  assert.ok(tokens.filter(({ treatment }) => treatment === "grounded").length > 0);
-  assert.ok(tokens.filter(({ treatment }) => treatment === "floating").length > 0);
+  assert.equal(tokens.map(({ text }) => text).join(""), "已经确定。 still processing");
+  assert.ok(tokens.filter(({ treatment }) => treatment === "settled").length > 0);
+  assert.ok(tokens.filter(({ treatment }) => treatment === "processing").length > 0);
   assert.equal(tokens.find(({ text }) => /^\s+$/u.test(text))?.whitespace, true);
 });
 
 test("unchanged tokens keep identity when treatment changes", () => {
   const previous: PreviewToken[] = [
-    { text: "同一个词", treatment: "floating", whitespace: false },
-    { text: "。", treatment: "floating", whitespace: false },
+    { text: "同一个词", treatment: "processing", whitespace: false },
+    { text: "。", treatment: "processing", whitespace: false },
   ];
-  const next: PreviewToken[] = previous.map((token) => ({ ...token, treatment: "grounded" }));
+  const next: PreviewToken[] = previous.map((token) => ({ ...token, treatment: "settled" }));
 
   assert.deepEqual(matchPreviewTokens(previous, next), [0, 1]);
 });
 
 test("only a truly unchanged visual frame can skip rendering", () => {
-  const floating: PreviewToken[] = [{ text: "相同文字", treatment: "floating", whitespace: false }];
+  const processing: PreviewToken[] = [{ text: "相同文字", treatment: "processing", whitespace: false }];
 
-  assert.equal(samePreviewTokens(floating, floating.map((token) => ({ ...token }))), true);
+  assert.equal(samePreviewTokens(processing, processing.map((token) => ({ ...token }))), true);
   assert.equal(
-    samePreviewTokens(floating, [{ text: "相同文字", treatment: "grounded", whitespace: false }]),
+    samePreviewTokens(processing, [{ text: "相同文字", treatment: "settled", whitespace: false }]),
     false,
   );
 });
@@ -44,15 +44,15 @@ test("only a truly unchanged visual frame can skip rendering", () => {
 test("a treatment boundary inside a word does not split its visual token", () => {
   const transitioning = tokenizePreviewFrame({
     chunks: [
-      { text: "recog", treatment: "grounded" },
-      { text: "nition", treatment: "floating" },
+      { text: "recog", treatment: "settled" },
+      { text: "nition", treatment: "processing" },
     ],
   });
-  const grounded = tokenizePreviewFrame({ chunks: [{ text: "recognition", treatment: "grounded" }] });
+  const settled = tokenizePreviewFrame({ chunks: [{ text: "recognition", treatment: "settled" }] });
 
-  assert.deepEqual(transitioning.map(({ text }) => text), grounded.map(({ text }) => text));
-  assert.equal(transitioning[0].treatment, "floating");
-  assert.equal(grounded[0].treatment, "grounded");
+  assert.deepEqual(transitioning.map(({ text }) => text), settled.map(({ text }) => text));
+  assert.equal(transitioning[0].treatment, "processing");
+  assert.equal(settled[0].treatment, "settled");
 });
 
 test("revision reuses surrounding tokens and replaces only the changed middle", () => {

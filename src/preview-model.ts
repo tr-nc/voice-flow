@@ -5,7 +5,7 @@
  * engine concepts. A different engine only needs to adapt its output to this
  * small contract.
  */
-export type PreviewTreatment = "floating" | "grounded";
+export type PreviewTreatment = "processing" | "settled";
 
 export type PreviewChunk = {
   text: string;
@@ -49,14 +49,14 @@ export function tokenizePreviewFrame(frame: PreviewFrame): PreviewToken[] {
   let tokenOffset = 0;
   return splitText(text).map((part) => {
     const tokenEnd = tokenOffset + part.length;
-    // A word that straddles a treatment boundary keeps floating until the
-    // whole word is grounded. Token boundaries therefore stay stable while a
+    // A word that straddles a treatment boundary stays in processing until the
+    // whole word is settled. Token boundaries therefore stay stable while a
     // producer advances its boundary through a word.
     const treatment = ranges.some(
-      (range) => range.start < tokenEnd && range.end > tokenOffset && range.treatment === "floating",
+      (range) => range.start < tokenEnd && range.end > tokenOffset && range.treatment === "processing",
     )
-      ? "floating"
-      : "grounded";
+      ? "processing"
+      : "settled";
     tokenOffset = tokenEnd;
     return { text: part, treatment, whitespace: /^\s+$/u.test(part) };
   });
@@ -65,7 +65,8 @@ export function tokenizePreviewFrame(frame: PreviewFrame): PreviewToken[] {
 function splitText(text: string): string[] {
   if (!wordSegmenter) {
     // Older WebKitGTK builds may not expose Intl.Segmenter. Keep a dependency-
-    // free fallback: CJK graphemes remain lively while Latin words stay whole.
+    // free fallback: CJK graphemes stay independently addressable while Latin
+    // words remain whole.
     return text.match(/\r\n|\r|\n|\s+|[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]|[\p{L}\p{N}\p{M}]+|[^\s]/gu) ?? [];
   }
 
@@ -80,7 +81,7 @@ function splitText(text: string): string[] {
 
 /**
  * Maps each next token to the previous token it can reuse. Matching ignores
- * treatment so a floating token can become grounded without losing its node.
+ * treatment so a processing token can become settled without losing its node.
  */
 export function matchPreviewTokens(
   previous: readonly Pick<PreviewToken, "text">[],
