@@ -552,7 +552,8 @@ html.overlay-root {
 .preview-revision-ghost {
   position: relative;
   display: inline-block;
-  overflow: hidden;
+  /* Non-visible overflow changes an inline block's baseline to its bottom edge. */
+  overflow: visible;
   color: var(--preview-revision-color);
   line-height: inherit;
   opacity: 0.68;

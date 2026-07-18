@@ -345,8 +345,13 @@ export class PreviewRenderer {
     const width = mark.element.getBoundingClientRect().width;
     const animation = mark.element.animate(
       [
-        { width: `${width}px`, marginRight: getComputedStyle(mark.element).marginRight, opacity: 0.68 },
-        { width: "0px", marginRight: "0px", opacity: 0 },
+        {
+          width: `${width}px`,
+          marginRight: getComputedStyle(mark.element).marginRight,
+          opacity: 0.68,
+          clipPath: "inset(0 0 0 0)",
+        },
+        { width: "0px", marginRight: "0px", opacity: 0, clipPath: "inset(0 100% 0 0)" },
       ],
       {
         duration: this.revisionRemovalDuration,
