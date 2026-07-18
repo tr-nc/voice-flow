@@ -478,10 +478,11 @@ html.overlay-root {
 
   position: relative;
   width: 100%;
-  min-height: 0;
+  /* Reserve two line boxes at rest and one breathing line below live text. */
+  min-height: calc(3.2em + 26px);
   max-height: calc(100vh - 16px);
   margin: 0;
-  padding: 12px 16px;
+  padding: 12px 16px calc(12px + 1.6em);
   overflow: hidden;
   overflow-wrap: anywhere;
   border: 1px solid rgb(83 72 62 / 16%);
@@ -549,17 +550,22 @@ html.overlay-root {
 }
 
 .preview-revision-ghost {
-  position: absolute;
-  z-index: 2;
+  position: relative;
   display: inline-block;
   overflow: hidden;
   color: var(--preview-revision-color);
   line-height: inherit;
+  opacity: 0.68;
   pointer-events: none;
-  transform-origin: center;
+  vertical-align: baseline;
+  white-space: pre-wrap;
 }
 
-.preview-revision-ghost::after {
+.preview-revision-ghost--last {
+  margin-right: 0.24em;
+}
+
+.preview-revision-ghost:not(.preview-revision-ghost--whitespace)::after {
   position: absolute;
   top: 52%;
   left: 0;
@@ -570,7 +576,8 @@ html.overlay-root {
   content: "";
   transform: scaleX(0);
   transform-origin: left center;
-  animation: preview-revision-strike 130ms cubic-bezier(.2,.8,.3,1) forwards;
+  animation: preview-revision-strike var(--revision-strike-duration, 420ms) cubic-bezier(.2,.8,.3,1)
+    var(--revision-strike-delay, 0ms) forwards;
 }
 
 .preview-sr-text {

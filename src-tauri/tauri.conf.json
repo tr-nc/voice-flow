@@ -29,7 +29,7 @@
         "title": "Voice Flow Dictation",
         "url": "index.html?window=dictation",
         "width": 720,
-        "height": 72,
+        "height": 94,
         "visible": false,
         "focus": false,
         "decorations": false,

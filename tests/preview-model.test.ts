@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
+  findPreviewRevisionRuns,
   matchPreviewTokens,
   samePreviewTokens,
   tokenizePreviewFrame,
@@ -84,4 +85,17 @@ test("a growing streaming word reuses its node without a correction ghost", () =
     ]),
     [0, 1, 2, 3],
   );
+});
+
+test("revision runs isolate each replaced region between stable anchors", () => {
+  const matches = [0, undefined, 2, undefined, 4];
+
+  assert.deepEqual(findPreviewRevisionRuns(5, matches), [
+    { previousStart: 1, previousEnd: 2, nextStart: 1, nextEnd: 2 },
+    { previousStart: 3, previousEnd: 4, nextStart: 3, nextEnd: 4 },
+  ]);
+});
+
+test("pure insertions do not produce struck revision text", () => {
+  assert.deepEqual(findPreviewRevisionRuns(3, [0, 1, undefined, 2]), []);
 });

@@ -320,9 +320,8 @@ async function mountDictationOverlay(root: HTMLDivElement) {
   root.innerHTML = `<p class="dictation-text"></p>`;
 
   const transcript = element<HTMLElement>(".dictation-text");
-  const preview = new PreviewRenderer(transcript);
   const overlayWindow = getCurrentWindow();
-  const minOverlayHeight = 72;
+  const minOverlayHeight = 94;
   const maxOverlayHeight = 280;
   // Eight pixels around the panel plus its one-pixel border on each side.
   const overlayVerticalPadding = 18;
@@ -363,6 +362,8 @@ async function mountDictationOverlay(root: HTMLDivElement) {
       });
     });
   };
+
+  const preview = new PreviewRenderer(transcript, { onLayoutChange: updateOverlayLayout });
 
   const applyRuntime = (next: RuntimeSnapshot) => {
     pendingPreview = toPreviewFrame(next.transcript, next.segments ?? []);

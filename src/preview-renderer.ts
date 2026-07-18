@@ -1,4 +1,5 @@
 import {
+  findPreviewRevisionRuns,
   matchPreviewTokens,
   samePreviewTokens,
   tokenizePreviewFrame,
@@ -12,9 +13,25 @@ type RenderedToken = PreviewToken & {
   entry: HTMLSpanElement;
 };
 
+type RevisionMark = {
+  element: HTMLSpanElement;
+  anchor: HTMLSpanElement | undefined;
+  removalTimer: number | undefined;
+};
+
+type CorrectionReveal = {
+  start: number;
+  end: number;
+  revealAfter: number;
+};
+
 export type PreviewRendererOptions = {
   animationWindow?: number;
   revisionGhostLimit?: number;
+  revisionHoldDuration?: number;
+  revisionStrikeDuration?: number;
+  revisionRemovalDuration?: number;
+  onLayoutChange?: () => void;
 };
 
 /** DOM implementation for PreviewFrame. It deliberately knows nothing about ASR. */
@@ -23,17 +40,25 @@ export class PreviewRenderer {
   private readonly announcement: HTMLSpanElement;
   private readonly animationWindow: number;
   private readonly revisionGhostLimit: number;
+  private readonly revisionHoldDuration: number;
+  private readonly revisionStrikeDuration: number;
+  private readonly revisionRemovalDuration: number;
+  private readonly onLayoutChange: (() => void) | undefined;
   private readonly reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
   private readonly supportsWebAnimations = typeof Element.prototype.animate === "function";
   private rendered: RenderedToken[] = [];
-  private revisionGhosts: HTMLSpanElement[] = [];
+  private revisionMarks: RevisionMark[] = [];
   private nextId = 1;
   private hasRendered = false;
   private announcedText = "";
 
-  constructor(private readonly root: HTMLElement, options: PreviewRendererOptions = {}) {
+  constructor(root: HTMLElement, options: PreviewRendererOptions = {}) {
     this.animationWindow = options.animationWindow ?? 18;
     this.revisionGhostLimit = options.revisionGhostLimit ?? 12;
+    this.revisionHoldDuration = options.revisionHoldDuration ?? 2_000;
+    this.revisionStrikeDuration = options.revisionStrikeDuration ?? 420;
+    this.revisionRemovalDuration = options.revisionRemovalDuration ?? 180;
+    this.onLayoutChange = options.onLayoutChange;
     this.content = document.createElement("span");
     this.content.className = "preview-content";
     this.content.setAttribute("aria-hidden", "true");
@@ -55,18 +80,8 @@ export class PreviewRenderer {
     if (samePreviewTokens(this.rendered, nextTokens)) return;
 
     const matches = matchPreviewTokens(this.rendered, nextTokens);
-    const matchedPrevious = new Set(matches.filter((index): index is number => index !== undefined));
     const animatedStart = Math.max(0, nextTokens.length - this.animationWindow);
     const oldPositions = this.measurePositions(this.rendered);
-    const rootRect = this.root.getBoundingClientRect();
-
-    if (this.animationsEnabled()) {
-      for (let index = 0; index < this.rendered.length; index += 1) {
-        if (!matchedPrevious.has(index) && index >= this.rendered.length - this.animationWindow) {
-          this.addRevisionGhost(this.rendered[index], rootRect);
-        }
-      }
-    }
 
     const nextRendered = nextTokens.map((token, nextIndex) => {
       const previousIndex = matches[nextIndex];
@@ -79,12 +94,36 @@ export class PreviewRenderer {
       return existing;
     });
 
+    const correctionInsertions = new Set<number>();
+    const correctionReveals: CorrectionReveal[] = [];
+    if (this.animationsEnabled()) {
+      for (const run of findPreviewRevisionRuns(this.rendered.length, matches)) {
+        const previous = this.rendered.slice(run.previousStart, run.previousEnd);
+        if (!previous.some((token) => !token.whitespace)) continue;
+
+        const anchor = nextRendered[run.nextStart]?.element;
+        const removedElements = new Set(previous.map(({ element }) => element));
+        this.revisionMarks.forEach((mark) => {
+          if (mark.anchor && removedElements.has(mark.anchor)) mark.anchor = anchor;
+        });
+
+        const revealAfter = this.addRevisionRun(previous, anchor);
+        for (let index = run.nextStart; index < run.nextEnd; index += 1) {
+          if (!nextRendered[index].whitespace) correctionInsertions.add(index);
+        }
+        correctionReveals.push({ start: run.nextStart, end: run.nextEnd, revealAfter });
+      }
+    }
+
     this.reconcileContent(nextRendered);
     this.applyTreatments(nextRendered);
 
     if (this.animationsEnabled()) {
+      correctionReveals.forEach(({ start, end, revealAfter }) => {
+        this.animateCorrectionInsertions(nextRendered, start, end, revealAfter);
+      });
       this.animateLayout(nextRendered, oldPositions, animatedStart);
-      this.animateInsertions(nextRendered, matches, animatedStart);
+      this.animateInsertions(nextRendered, matches, animatedStart, correctionInsertions);
     }
 
     this.rendered = nextRendered;
@@ -103,8 +142,11 @@ export class PreviewRenderer {
       this.announcement.textContent = "";
       this.announcedText = "";
     }
-    this.revisionGhosts.forEach((ghost) => ghost.remove());
-    this.revisionGhosts = [];
+    this.revisionMarks.forEach((mark) => {
+      if (mark.removalTimer !== undefined) window.clearTimeout(mark.removalTimer);
+      mark.element.remove();
+    });
+    this.revisionMarks = [];
   }
 
   private createToken(token: PreviewToken): RenderedToken {
@@ -133,12 +175,23 @@ export class PreviewRenderer {
   }
 
   private reconcileContent(tokens: readonly RenderedToken[]): void {
+    const desiredNodes: HTMLSpanElement[] = [];
+    tokens.forEach(({ element }) => {
+      this.revisionMarks.forEach((mark) => {
+        if (mark.anchor === element) desiredNodes.push(mark.element);
+      });
+      desiredNodes.push(element);
+    });
+    this.revisionMarks.forEach((mark) => {
+      if (!mark.anchor) desiredNodes.push(mark.element);
+    });
+
     let cursor = this.content.firstChild;
-    for (const { element } of tokens) {
-      if (cursor === element) {
+    for (const node of desiredNodes) {
+      if (cursor === node) {
         cursor = cursor.nextSibling;
       } else {
-        this.content.insertBefore(element, cursor);
+        this.content.insertBefore(node, cursor);
       }
     }
     while (cursor) {
@@ -172,9 +225,17 @@ export class PreviewRenderer {
     tokens: readonly RenderedToken[],
     matches: Array<number | undefined>,
     animatedStart: number,
+    correctionInsertions: ReadonlySet<number>,
   ): void {
     tokens.forEach((token, index) => {
-      if (index < animatedStart || matches[index] !== undefined || token.whitespace) return;
+      if (
+        index < animatedStart ||
+        matches[index] !== undefined ||
+        token.whitespace ||
+        correctionInsertions.has(index)
+      ) {
+        return;
+      }
       token.entry.animate(
         [
           { opacity: 0, filter: "blur(2px)" },
@@ -186,37 +247,114 @@ export class PreviewRenderer {
     });
   }
 
-  private addRevisionGhost(token: RenderedToken, rootRect: DOMRect): void {
-    if (token.whitespace || this.revisionGhostLimit === 0) return;
-    const rect = token.element.getBoundingClientRect();
-    if (rect.bottom < rootRect.top || rect.top > rootRect.bottom) return;
-
-    const ghost = document.createElement("span");
-    ghost.className = "preview-revision-ghost";
-    ghost.setAttribute("aria-hidden", "true");
-    ghost.textContent = token.text;
-    ghost.style.left = `${rect.left - rootRect.left + this.root.scrollLeft}px`;
-    ghost.style.top = `${rect.top - rootRect.top + this.root.scrollTop}px`;
-    ghost.style.width = `${rect.width}px`;
-    ghost.style.height = `${rect.height}px`;
-    while (this.revisionGhosts.length >= this.revisionGhostLimit) {
-      this.revisionGhosts.shift()?.remove();
-    }
-    this.revisionGhosts.push(ghost);
-    this.root.append(ghost);
-
-    const animation = ghost.animate(
-      [
-        { opacity: 0.78, transform: "scale(1)" },
-        { opacity: 0, transform: "scale(.82)", offset: 1 },
-      ],
-      { duration: 250, easing: "cubic-bezier(.35,0,.65,1)" },
+  private addRevisionRun(tokens: readonly RenderedToken[], anchor: HTMLSpanElement | undefined): number {
+    if (this.revisionGhostLimit === 0) return 0;
+    const firstText = tokens.findIndex((token) => !token.whitespace);
+    let lastText = tokens.length - 1;
+    while (lastText >= 0 && tokens[lastText].whitespace) lastText -= 1;
+    if (firstText < 0 || lastText < firstText) return 0;
+    const visibleTokens = tokens.slice(firstText, lastText + 1);
+    const drawableLength = visibleTokens.reduce(
+      (length, token) => length + (token.whitespace ? 0 : Math.max(1, Array.from(token.text).length)),
+      0,
     );
-    const removeGhost = () => {
-      ghost.remove();
-      this.revisionGhosts = this.revisionGhosts.filter((candidate) => candidate !== ghost);
+    let strikeDelay = 0;
+    const newMarks: RevisionMark[] = [];
+
+    visibleTokens.forEach((token, index) => {
+      const markElement = document.createElement("span");
+      markElement.className = [
+        "preview-revision-ghost",
+        token.whitespace ? "preview-revision-ghost--whitespace" : "",
+        index === visibleTokens.length - 1 ? "preview-revision-ghost--last" : "",
+      ]
+        .filter(Boolean)
+        .join(" ");
+      markElement.setAttribute("aria-hidden", "true");
+      markElement.textContent = token.text;
+
+      if (!token.whitespace) {
+        const weight = Math.max(1, Array.from(token.text).length) / drawableLength;
+        const duration = Math.max(70, Math.round(this.revisionStrikeDuration * weight));
+        markElement.style.setProperty("--revision-strike-delay", `${strikeDelay}ms`);
+        markElement.style.setProperty("--revision-strike-duration", `${duration}ms`);
+        strikeDelay += duration;
+      }
+
+      while (this.revisionMarks.length >= this.revisionGhostLimit) {
+        const oldest = this.revisionMarks[0];
+        if (oldest) this.removeRevisionMark(oldest, false);
+      }
+
+      const mark: RevisionMark = {
+        element: markElement,
+        anchor,
+        removalTimer: undefined,
+      };
+      this.revisionMarks.push(mark);
+      newMarks.push(mark);
+    });
+    newMarks
+      .filter((mark) => this.revisionMarks.includes(mark))
+      .forEach((mark) => {
+        mark.removalTimer = window.setTimeout(
+          () => this.removeRevisionMark(mark, true),
+          strikeDelay + this.revisionHoldDuration,
+        );
+      });
+    return strikeDelay;
+  }
+
+  private animateCorrectionInsertions(
+    tokens: readonly RenderedToken[],
+    start: number,
+    end: number,
+    revealAfter: number,
+  ): void {
+    for (let index = start; index < end; index += 1) {
+      const token = tokens[index];
+      if (token.whitespace) continue;
+      const animation = token.element.animate(
+        [
+          { width: "0px", maxWidth: "0px", opacity: 0, clipPath: "inset(0 100% 0 0)" },
+          { width: "0px", maxWidth: "0px", opacity: 0, clipPath: "inset(0 100% 0 0)" },
+        ],
+        {
+          duration: revealAfter,
+          easing: "steps(1, end)",
+        },
+      );
+      animation.finished.then(() => this.onLayoutChange?.()).catch(() => undefined);
+    }
+  }
+
+  private removeRevisionMark(mark: RevisionMark, animate: boolean): void {
+    if (mark.removalTimer !== undefined) window.clearTimeout(mark.removalTimer);
+    mark.removalTimer = undefined;
+    const finish = () => {
+      if (!this.revisionMarks.includes(mark)) return;
+      mark.element.remove();
+      this.revisionMarks = this.revisionMarks.filter((candidate) => candidate !== mark);
+      this.onLayoutChange?.();
     };
-    animation.finished.then(removeGhost).catch(removeGhost);
+    if (!animate || !mark.element.isConnected || !this.animationsEnabled()) {
+      finish();
+      return;
+    }
+
+    const width = mark.element.getBoundingClientRect().width;
+    const animation = mark.element.animate(
+      [
+        { width: `${width}px`, marginRight: getComputedStyle(mark.element).marginRight, opacity: 0.68 },
+        { width: "0px", marginRight: "0px", opacity: 0 },
+      ],
+      {
+        duration: this.revisionRemovalDuration,
+        easing: "cubic-bezier(.4,0,.2,1)",
+        fill: "forwards",
+      },
+    );
+    animation.finished.then(finish).catch(finish);
   }
 
   private animationsEnabled(): boolean {

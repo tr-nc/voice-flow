@@ -20,7 +20,7 @@ use crate::shortcut::ShortcutBinding;
 
 const RUNTIME_EVENT: &str = "voice-flow://runtime";
 const COMPLETION_STATUS_DURATION: Duration = Duration::from_millis(150);
-const DICTATION_MIN_HEIGHT: u32 = 72;
+const DICTATION_MIN_HEIGHT: u32 = 94;
 const DICTATION_MAX_HEIGHT: u32 = 280;
 const DICTATION_BOTTOM_MARGIN: f64 = 92.0;
 #[cfg(target_os = "linux")]

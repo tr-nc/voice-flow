@@ -22,6 +22,13 @@ export type PreviewToken = {
   whitespace: boolean;
 };
 
+export type PreviewRevisionRun = {
+  previousStart: number;
+  previousEnd: number;
+  nextStart: number;
+  nextEnd: number;
+};
+
 export function samePreviewTokens(previous: readonly PreviewToken[], next: readonly PreviewToken[]): boolean {
   return (
     previous.length === next.length &&
@@ -131,6 +138,43 @@ export function matchPreviewTokens(
     matches[prefix + nextIndex] = prefix + previousIndex;
   }
   return matches;
+}
+
+/**
+ * Finds replacement/deletion runs between reusable tokens. Insert-only runs
+ * are intentionally omitted because they have no incorrect text to strike.
+ */
+export function findPreviewRevisionRuns(
+  previousLength: number,
+  matches: readonly (number | undefined)[],
+): PreviewRevisionRun[] {
+  const runs: PreviewRevisionRun[] = [];
+  let previousStart = 0;
+  let nextStart = 0;
+
+  matches.forEach((previousIndex, nextIndex) => {
+    if (previousIndex === undefined) return;
+    if (previousIndex > previousStart) {
+      runs.push({
+        previousStart,
+        previousEnd: previousIndex,
+        nextStart,
+        nextEnd: nextIndex,
+      });
+    }
+    previousStart = previousIndex + 1;
+    nextStart = nextIndex + 1;
+  });
+
+  if (previousStart < previousLength) {
+    runs.push({
+      previousStart,
+      previousEnd: previousLength,
+      nextStart,
+      nextEnd: matches.length,
+    });
+  }
+  return runs;
 }
 
 function longestCommonSubsequence(
