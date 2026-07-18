@@ -2,6 +2,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { toPreviewFrame } from "./preview-adapter";
+import { latestWholeLineScrollTop } from "./preview-layout";
 import type { PreviewFrame } from "./preview-model";
 import { PreviewRenderer } from "./preview-renderer";
 import "./style.css";
@@ -327,25 +328,44 @@ async function mountDictationOverlay(root: HTMLDivElement) {
   const overlayVerticalPadding = 18;
   let layoutFrame: number | undefined;
   let previewFrame: number | undefined;
+  let scrollFrame: number | undefined;
   let pendingPreview: PreviewFrame | undefined;
   let desiredHeight = minOverlayHeight;
   let appliedHeight = 0;
-  let resizeInFlight = false;
+  let resizeLoop: Promise<void> | undefined;
 
-  const flushOverlayResize = async () => {
-    if (resizeInFlight || desiredHeight === appliedHeight) return;
-    resizeInFlight = true;
-    try {
-      while (desiredHeight !== appliedHeight) {
-        const targetHeight = desiredHeight;
-        await invoke("resize_dictation_overlay", { height: targetHeight });
-        appliedHeight = targetHeight;
+  const flushOverlayResize = (): Promise<void> => {
+    if (resizeLoop) return resizeLoop;
+    if (desiredHeight === appliedHeight) return Promise.resolve();
+
+    resizeLoop = (async () => {
+      try {
+        while (desiredHeight !== appliedHeight) {
+          const targetHeight = desiredHeight;
+          await invoke("resize_dictation_overlay", { height: targetHeight });
+          appliedHeight = targetHeight;
+        }
+      } catch (error) {
+        console.error("Failed to resize the dictation overlay:", asMessage(error));
+      } finally {
+        resizeLoop = undefined;
       }
-    } catch (error) {
-      console.error("Failed to resize the dictation overlay:", asMessage(error));
-    } finally {
-      resizeInFlight = false;
-    }
+    })();
+    return resizeLoop;
+  };
+
+  const scrollPreviewToLatestLine = () => {
+    if (scrollFrame !== undefined) window.cancelAnimationFrame(scrollFrame);
+    scrollFrame = window.requestAnimationFrame(() => {
+      scrollFrame = undefined;
+      const style = window.getComputedStyle(transcript);
+      transcript.scrollTop = latestWholeLineScrollTop({
+        scrollHeight: transcript.scrollHeight,
+        clientHeight: transcript.clientHeight,
+        paddingTop: Number.parseFloat(style.paddingTop),
+        lineHeight: Number.parseFloat(style.lineHeight),
+      });
+    });
   };
 
   const updateOverlayLayout = () => {
@@ -356,10 +376,9 @@ async function mountDictationOverlay(root: HTMLDivElement) {
         maxOverlayHeight,
         Math.max(minOverlayHeight, Math.ceil(transcript.scrollHeight) + overlayVerticalPadding),
       );
-      void flushOverlayResize().finally(() => {
-        // When the capped preview overflows, keep the newest recognized words visible.
-        transcript.scrollTop = transcript.scrollHeight;
-      });
+      // Wait for the webview height to settle, then scroll by complete line
+      // boxes so the first visible row is never cut in half.
+      void flushOverlayResize().finally(scrollPreviewToLatestLine);
     });
   };
 
