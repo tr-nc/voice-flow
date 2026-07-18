@@ -448,6 +448,10 @@ select:focus-visible {
 }
 
 /* Click-through overlay: the webview never takes focus or pointer input. */
+html.overlay-root {
+  background: transparent;
+}
+
 .overlay-body {
   height: 100vh;
   min-height: 0;

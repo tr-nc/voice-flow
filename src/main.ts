@@ -315,6 +315,7 @@ async function mountSettings(root: HTMLDivElement) {
 }
 
 async function mountDictationOverlay(root: HTMLDivElement) {
+  document.documentElement.classList.add("overlay-root");
   document.body.className = "overlay-body";
   root.innerHTML = `<p class="dictation-text"></p>`;
 
