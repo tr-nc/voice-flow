@@ -562,10 +562,6 @@ html.overlay-root {
   white-space: pre-wrap;
 }
 
-.preview-revision-ghost--last {
-  margin-right: 0.24em;
-}
-
 .preview-revision-ghost:not(.preview-revision-ghost--whitespace)::after {
   position: absolute;
   top: 52%;

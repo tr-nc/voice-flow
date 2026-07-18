@@ -16,21 +16,20 @@ type RenderedToken = PreviewToken & {
 type RevisionMark = {
   element: HTMLSpanElement;
   anchor: HTMLSpanElement | undefined;
-  removalTimer: number | undefined;
 };
 
-type CorrectionReveal = {
+type CorrectionTransition = {
   start: number;
   end: number;
-  revealAfter: number;
+  replaceAfter: number;
+  marks: readonly RevisionMark[];
 };
 
 export type PreviewRendererOptions = {
   animationWindow?: number;
   revisionGhostLimit?: number;
-  revisionHoldDuration?: number;
   revisionStrikeDuration?: number;
-  revisionRemovalDuration?: number;
+  revisionReplaceDuration?: number;
   onLayoutChange?: () => void;
 };
 
@@ -40,9 +39,8 @@ export class PreviewRenderer {
   private readonly announcement: HTMLSpanElement;
   private readonly animationWindow: number;
   private readonly revisionGhostLimit: number;
-  private readonly revisionHoldDuration: number;
   private readonly revisionStrikeDuration: number;
-  private readonly revisionRemovalDuration: number;
+  private readonly revisionReplaceDuration: number;
   private readonly onLayoutChange: (() => void) | undefined;
   private readonly reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
   private readonly supportsWebAnimations = typeof Element.prototype.animate === "function";
@@ -55,9 +53,8 @@ export class PreviewRenderer {
   constructor(root: HTMLElement, options: PreviewRendererOptions = {}) {
     this.animationWindow = options.animationWindow ?? 18;
     this.revisionGhostLimit = options.revisionGhostLimit ?? 12;
-    this.revisionHoldDuration = options.revisionHoldDuration ?? 2_000;
     this.revisionStrikeDuration = options.revisionStrikeDuration ?? 420;
-    this.revisionRemovalDuration = options.revisionRemovalDuration ?? 180;
+    this.revisionReplaceDuration = options.revisionReplaceDuration ?? 180;
     this.onLayoutChange = options.onLayoutChange;
     this.content = document.createElement("span");
     this.content.className = "preview-content";
@@ -95,7 +92,7 @@ export class PreviewRenderer {
     });
 
     const correctionInsertions = new Set<number>();
-    const correctionReveals: CorrectionReveal[] = [];
+    const correctionTransitions: CorrectionTransition[] = [];
     if (this.animationsEnabled()) {
       for (const run of findPreviewRevisionRuns(this.rendered.length, matches)) {
         const previous = this.rendered.slice(run.previousStart, run.previousEnd);
@@ -107,11 +104,16 @@ export class PreviewRenderer {
           if (mark.anchor && removedElements.has(mark.anchor)) mark.anchor = anchor;
         });
 
-        const revealAfter = this.addRevisionRun(previous, anchor);
+        const transition = this.addRevisionRun(previous, anchor);
         for (let index = run.nextStart; index < run.nextEnd; index += 1) {
           if (!nextRendered[index].whitespace) correctionInsertions.add(index);
         }
-        correctionReveals.push({ start: run.nextStart, end: run.nextEnd, revealAfter });
+        correctionTransitions.push({
+          start: run.nextStart,
+          end: run.nextEnd,
+          replaceAfter: transition.replaceAfter,
+          marks: transition.marks,
+        });
       }
     }
 
@@ -119,8 +121,11 @@ export class PreviewRenderer {
     this.applyTreatments(nextRendered);
 
     if (this.animationsEnabled()) {
-      correctionReveals.forEach(({ start, end, revealAfter }) => {
-        this.animateCorrectionInsertions(nextRendered, start, end, revealAfter);
+      correctionTransitions.forEach(({ start, end, replaceAfter, marks }) => {
+        // Old and corrected widths share one timeline, so replacement never
+        // creates a temporary double-width run that can wrap onto two lines.
+        marks.forEach((mark) => this.removeRevisionMark(mark, true, replaceAfter));
+        this.animateCorrectionInsertions(nextRendered, start, end, replaceAfter);
       });
       this.animateLayout(nextRendered, oldPositions, animatedStart);
       this.animateInsertions(nextRendered, matches, animatedStart, correctionInsertions);
@@ -143,7 +148,6 @@ export class PreviewRenderer {
       this.announcedText = "";
     }
     this.revisionMarks.forEach((mark) => {
-      if (mark.removalTimer !== undefined) window.clearTimeout(mark.removalTimer);
       mark.element.remove();
     });
     this.revisionMarks = [];
@@ -247,12 +251,15 @@ export class PreviewRenderer {
     });
   }
 
-  private addRevisionRun(tokens: readonly RenderedToken[], anchor: HTMLSpanElement | undefined): number {
-    if (this.revisionGhostLimit === 0) return 0;
+  private addRevisionRun(
+    tokens: readonly RenderedToken[],
+    anchor: HTMLSpanElement | undefined,
+  ): { replaceAfter: number; marks: readonly RevisionMark[] } {
+    if (this.revisionGhostLimit === 0) return { replaceAfter: 0, marks: [] };
     const firstText = tokens.findIndex((token) => !token.whitespace);
     let lastText = tokens.length - 1;
     while (lastText >= 0 && tokens[lastText].whitespace) lastText -= 1;
-    if (firstText < 0 || lastText < firstText) return 0;
+    if (firstText < 0 || lastText < firstText) return { replaceAfter: 0, marks: [] };
     const visibleTokens = tokens.slice(firstText, lastText + 1);
     const drawableLength = visibleTokens.reduce(
       (length, token) => length + (token.whitespace ? 0 : Math.max(1, Array.from(token.text).length)),
@@ -261,12 +268,11 @@ export class PreviewRenderer {
     let strikeDelay = 0;
     const newMarks: RevisionMark[] = [];
 
-    visibleTokens.forEach((token, index) => {
+    visibleTokens.forEach((token) => {
       const markElement = document.createElement("span");
       markElement.className = [
         "preview-revision-ghost",
         token.whitespace ? "preview-revision-ghost--whitespace" : "",
-        index === visibleTokens.length - 1 ? "preview-revision-ghost--last" : "",
       ]
         .filter(Boolean)
         .join(" ");
@@ -289,20 +295,14 @@ export class PreviewRenderer {
       const mark: RevisionMark = {
         element: markElement,
         anchor,
-        removalTimer: undefined,
       };
       this.revisionMarks.push(mark);
       newMarks.push(mark);
     });
-    newMarks
-      .filter((mark) => this.revisionMarks.includes(mark))
-      .forEach((mark) => {
-        mark.removalTimer = window.setTimeout(
-          () => this.removeRevisionMark(mark, true),
-          strikeDelay + this.revisionHoldDuration,
-        );
-      });
-    return strikeDelay;
+    return {
+      replaceAfter: strikeDelay,
+      marks: newMarks.filter((mark) => this.revisionMarks.includes(mark)),
+    };
   }
 
   private animateCorrectionInsertions(
@@ -314,23 +314,29 @@ export class PreviewRenderer {
     for (let index = start; index < end; index += 1) {
       const token = tokens[index];
       if (token.whitespace) continue;
+      const targetWidth = token.element.getBoundingClientRect().width;
       const animation = token.element.animate(
         [
           { width: "0px", maxWidth: "0px", opacity: 0, clipPath: "inset(0 100% 0 0)" },
-          { width: "0px", maxWidth: "0px", opacity: 0, clipPath: "inset(0 100% 0 0)" },
+          {
+            width: `${targetWidth}px`,
+            maxWidth: `${targetWidth}px`,
+            opacity: 1,
+            clipPath: "inset(0 0 0 0)",
+          },
         ],
         {
-          duration: revealAfter,
-          easing: "steps(1, end)",
+          delay: revealAfter,
+          duration: this.revisionReplaceDuration,
+          easing: "cubic-bezier(.22,.75,.28,1)",
+          fill: "backwards",
         },
       );
       animation.finished.then(() => this.onLayoutChange?.()).catch(() => undefined);
     }
   }
 
-  private removeRevisionMark(mark: RevisionMark, animate: boolean): void {
-    if (mark.removalTimer !== undefined) window.clearTimeout(mark.removalTimer);
-    mark.removalTimer = undefined;
+  private removeRevisionMark(mark: RevisionMark, animate: boolean, delay = 0): void {
     const finish = () => {
       if (!this.revisionMarks.includes(mark)) return;
       mark.element.remove();
@@ -347,15 +353,15 @@ export class PreviewRenderer {
       [
         {
           width: `${width}px`,
-          marginRight: getComputedStyle(mark.element).marginRight,
           opacity: 0.68,
           clipPath: "inset(0 0 0 0)",
         },
-        { width: "0px", marginRight: "0px", opacity: 0, clipPath: "inset(0 100% 0 0)" },
+        { width: "0px", opacity: 0, clipPath: "inset(0 100% 0 0)" },
       ],
       {
-        duration: this.revisionRemovalDuration,
-        easing: "cubic-bezier(.4,0,.2,1)",
+        delay,
+        duration: this.revisionReplaceDuration,
+        easing: "cubic-bezier(.22,.75,.28,1)",
         fill: "forwards",
       },
     );
