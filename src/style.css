@@ -470,9 +470,9 @@ select:focus-visible {
   --preview-floating-color: #87533f;
   --preview-grounded-color: #49604b;
   --preview-revision-color: #9f6d59;
-  --preview-floating-lift: -2px;
-  --preview-state-transition: 320ms;
-  --preview-drift-duration: 1150ms;
+  --preview-floating-lift: -2.5px;
+  --preview-state-transition: 460ms;
+  --preview-drift-duration: 3400ms;
 
   position: relative;
   width: 100%;
@@ -522,7 +522,12 @@ select:focus-visible {
 
 .preview-token__motion {
   transform: translateY(0);
-  transition: transform var(--preview-state-transition) cubic-bezier(.22,.72,.24,1);
+  transition: transform var(--preview-state-transition) cubic-bezier(.22,.64,.28,1);
+}
+
+.preview-token__drift {
+  transform: translateY(0);
+  transition: transform var(--preview-state-transition) cubic-bezier(.22,.64,.28,1);
 }
 
 .preview-token--grounded {
@@ -549,7 +554,7 @@ select:focus-visible {
 }
 
 .preview-token--drifting .preview-token__drift {
-  animation: preview-token-drift var(--preview-drift-duration) ease-in-out var(--preview-delay, 0ms) infinite alternate;
+  animation: preview-token-drift var(--preview-drift-duration) linear infinite;
   will-change: transform;
 }
 
@@ -590,14 +595,37 @@ select:focus-visible {
 }
 
 @keyframes preview-token-drift {
-  from {
-    text-shadow: 0 2px 4px rgb(79 54 43 / 10%);
-    transform: translateY(-0.45px) rotate(-0.08deg);
+  0%,
+  100% {
+    transform: translateY(0);
   }
 
-  to {
-    text-shadow: 0 3px 6px rgb(79 54 43 / 14%);
-    transform: translateY(0.45px) rotate(0.08deg);
+  12.5% {
+    transform: translateY(-0.78px);
+  }
+
+  25% {
+    transform: translateY(-1.1px);
+  }
+
+  37.5% {
+    transform: translateY(-0.78px);
+  }
+
+  50% {
+    transform: translateY(0);
+  }
+
+  62.5% {
+    transform: translateY(0.78px);
+  }
+
+  75% {
+    transform: translateY(1.1px);
+  }
+
+  87.5% {
+    transform: translateY(0.78px);
   }
 }
 

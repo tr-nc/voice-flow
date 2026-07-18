@@ -17,6 +17,7 @@ type RenderedToken = PreviewToken & {
 export type PreviewRendererOptions = {
   animationWindow?: number;
   revisionGhostLimit?: number;
+  stateTransitionDurationMs?: number;
 };
 
 /** DOM implementation for PreviewFrame. It deliberately knows nothing about ASR. */
@@ -25,6 +26,7 @@ export class PreviewRenderer {
   private readonly announcement: HTMLSpanElement;
   private readonly animationWindow: number;
   private readonly revisionGhostLimit: number;
+  private readonly stateTransitionDurationMs: number;
   private readonly reducedMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
   private readonly supportsWebAnimations = typeof Element.prototype.animate === "function";
   private rendered: RenderedToken[] = [];
@@ -36,6 +38,8 @@ export class PreviewRenderer {
   constructor(private readonly root: HTMLElement, options: PreviewRendererOptions = {}) {
     this.animationWindow = options.animationWindow ?? 18;
     this.revisionGhostLimit = options.revisionGhostLimit ?? 12;
+    this.stateTransitionDurationMs =
+      options.stateTransitionDurationMs ?? cssTimeInMs(root, "--preview-state-transition", 460);
     this.content = document.createElement("span");
     this.content.className = "preview-content";
     this.content.setAttribute("aria-hidden", "true");
@@ -60,6 +64,7 @@ export class PreviewRenderer {
     const matchedPrevious = new Set(matches.filter((index): index is number => index !== undefined));
     const animatedStart = Math.max(0, nextTokens.length - this.animationWindow);
     const oldPositions = this.measurePositions(this.rendered);
+    const previousDriftTransforms = this.measureDriftTransforms();
     const rootRect = this.root.getBoundingClientRect();
 
     if (this.animationsEnabled()) {
@@ -82,7 +87,7 @@ export class PreviewRenderer {
     });
 
     this.reconcileContent(nextRendered);
-    this.applyTreatments(nextRendered, animatedStart);
+    this.applyTreatments(nextRendered, animatedStart, previousDriftTransforms);
 
     if (this.animationsEnabled()) {
       this.animateLayout(nextRendered, oldPositions, animatedStart);
@@ -120,27 +125,37 @@ export class PreviewRenderer {
     motion.className = "preview-token__motion";
     drift.className = "preview-token__drift";
     drift.textContent = token.text;
-    element.style.setProperty("--preview-delay", `${-((id * 137) % 900)}ms`);
     motion.append(drift);
     entry.append(motion);
     element.append(entry);
     return { ...token, id, element, entry, motion, drift };
   }
 
-  private applyTreatments(tokens: RenderedToken[], animatedStart: number): void {
+  private applyTreatments(
+    tokens: RenderedToken[],
+    animatedStart: number,
+    previousDriftTransforms: ReadonlyMap<number, string>,
+  ): void {
     tokens.forEach((token, index) => {
+      const drifting = token.treatment === "floating" && !token.whitespace && index >= animatedStart;
       const className = [
         "preview-token",
         `preview-token--${token.treatment}`,
         token.whitespace ? "preview-token--whitespace" : "",
-        token.treatment === "floating" && !token.whitespace && index >= animatedStart
-          ? "preview-token--drifting"
-          : "",
+        drifting ? "preview-token--drifting" : "",
       ]
         .filter(Boolean)
         .join(" ");
       if (token.element.className !== className) token.element.className = className;
       if (token.drift.textContent !== token.text) token.drift.textContent = token.text;
+
+      const previousDrift = previousDriftTransforms.get(token.id);
+      if (previousDrift && !drifting && this.animationsEnabled()) {
+        token.drift.animate([{ transform: previousDrift }, { transform: "translateY(0)" }], {
+          duration: this.stateTransitionDurationMs,
+          easing: "cubic-bezier(.22,.64,.28,1)",
+        });
+      }
     });
   }
 
@@ -162,6 +177,15 @@ export class PreviewRenderer {
 
   private measurePositions(tokens: readonly RenderedToken[]): Map<number, DOMRect> {
     return new Map(tokens.map((token) => [token.id, token.element.getBoundingClientRect()]));
+  }
+
+  private measureDriftTransforms(): Map<number, string> {
+    if (!this.animationsEnabled()) return new Map();
+    return new Map(
+      this.rendered
+        .filter((token) => token.element.classList.contains("preview-token--drifting"))
+        .map((token) => [token.id, getComputedStyle(token.drift).transform]),
+    );
   }
 
   private animateLayout(tokens: readonly RenderedToken[], oldPositions: Map<number, DOMRect>, animatedStart: number): void {
@@ -234,4 +258,13 @@ export class PreviewRenderer {
   private animationsEnabled(): boolean {
     return this.hasRendered && this.supportsWebAnimations && !this.reducedMotion.matches;
   }
+}
+
+function cssTimeInMs(element: Element, property: string, fallback: number): number {
+  const value = getComputedStyle(element).getPropertyValue(property).trim();
+  const parsed = Number.parseFloat(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  if (value.endsWith("ms")) return parsed;
+  if (value.endsWith("s")) return parsed * 1000;
+  return fallback;
 }
