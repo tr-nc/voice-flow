@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { matchPreviewTokens, tokenizePreviewFrame, type PreviewToken } from "../src/preview-model.ts";
+import {
+  matchPreviewTokens,
+  samePreviewTokens,
+  tokenizePreviewFrame,
+  type PreviewToken,
+} from "../src/preview-model.ts";
 
 test("tokenization preserves text and presentation treatment", () => {
   const tokens = tokenizePreviewFrame({
@@ -24,6 +29,16 @@ test("unchanged tokens keep identity when treatment changes", () => {
   const next: PreviewToken[] = previous.map((token) => ({ ...token, treatment: "grounded" }));
 
   assert.deepEqual(matchPreviewTokens(previous, next), [0, 1]);
+});
+
+test("only a truly unchanged visual frame can skip rendering", () => {
+  const floating: PreviewToken[] = [{ text: "相同文字", treatment: "floating", whitespace: false }];
+
+  assert.equal(samePreviewTokens(floating, floating.map((token) => ({ ...token }))), true);
+  assert.equal(
+    samePreviewTokens(floating, [{ text: "相同文字", treatment: "grounded", whitespace: false }]),
+    false,
+  );
 });
 
 test("a treatment boundary inside a word does not split its visual token", () => {

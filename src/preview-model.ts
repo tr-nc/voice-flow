@@ -22,6 +22,18 @@ export type PreviewToken = {
   whitespace: boolean;
 };
 
+export function samePreviewTokens(previous: readonly PreviewToken[], next: readonly PreviewToken[]): boolean {
+  return (
+    previous.length === next.length &&
+    previous.every(
+      (token, index) =>
+        token.text === next[index].text &&
+        token.treatment === next[index].treatment &&
+        token.whitespace === next[index].whitespace,
+    )
+  );
+}
+
 const wordSegmenter = "Segmenter" in Intl ? new Intl.Segmenter(undefined, { granularity: "word" }) : undefined;
 
 export function tokenizePreviewFrame(frame: PreviewFrame): PreviewToken[] {

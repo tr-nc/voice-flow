@@ -461,7 +461,7 @@ select:focus-visible {
   display: flex;
   height: 100vh;
   min-height: 0;
-  align-items: stretch;
+  align-items: flex-start;
   justify-content: center;
   padding: 8px 18px;
 }
@@ -470,6 +470,9 @@ select:focus-visible {
   --preview-floating-color: #87533f;
   --preview-grounded-color: #49604b;
   --preview-revision-color: #9f6d59;
+  --preview-floating-lift: -2px;
+  --preview-state-transition: 320ms;
+  --preview-drift-duration: 1150ms;
 
   position: relative;
   width: 100%;
@@ -506,15 +509,20 @@ select:focus-visible {
 }
 
 .preview-token__entry,
-.preview-token__motion {
+.preview-token__motion,
+.preview-token__drift {
   display: inline-block;
   max-width: 100%;
   overflow-wrap: anywhere;
 }
 
-.preview-token__entry {
-  color: inherit;
-  transition: color 220ms ease-out;
+.preview-token {
+  transition: color 280ms ease-out;
+}
+
+.preview-token__motion {
+  transform: translateY(0);
+  transition: transform var(--preview-state-transition) cubic-bezier(.22,.72,.24,1);
 }
 
 .preview-token--grounded {
@@ -525,28 +533,23 @@ select:focus-visible {
   color: var(--preview-floating-color);
 }
 
+.preview-token--floating .preview-token__motion {
+  transform: translateY(var(--preview-floating-lift));
+}
+
 .preview-token--whitespace {
   display: inline;
   white-space: pre-wrap;
 }
 
 .preview-token--whitespace .preview-token__entry,
-.preview-token--whitespace .preview-token__motion {
+.preview-token--whitespace .preview-token__motion,
+.preview-token--whitespace .preview-token__drift {
   display: inline;
 }
 
-.preview-token--float-hot .preview-token__motion {
-  animation: preview-token-float-hot 860ms ease-in-out var(--preview-delay, 0ms) infinite alternate;
-  will-change: transform;
-}
-
-.preview-token--float-warm .preview-token__motion {
-  animation: preview-token-float-warm 1180ms ease-in-out var(--preview-delay, 0ms) infinite alternate;
-  will-change: transform;
-}
-
-.preview-token--float-calm .preview-token__motion {
-  animation: preview-token-float-calm 1550ms ease-in-out var(--preview-delay, 0ms) infinite alternate;
+.preview-token--drifting .preview-token__drift {
+  animation: preview-token-drift var(--preview-drift-duration) ease-in-out var(--preview-delay, 0ms) infinite alternate;
   will-change: transform;
 }
 
@@ -586,37 +589,15 @@ select:focus-visible {
   border: 0;
 }
 
-@keyframes preview-token-float-hot {
+@keyframes preview-token-drift {
   from {
-    text-shadow: 0 1px 2px rgb(79 54 43 / 8%);
-    transform: translateY(1.2px) rotate(-0.25deg) scale(0.992);
+    text-shadow: 0 2px 4px rgb(79 54 43 / 10%);
+    transform: translateY(-0.45px) rotate(-0.08deg);
   }
 
   to {
-    text-shadow: 0 4px 7px rgb(79 54 43 / 18%);
-    transform: translateY(-3.2px) rotate(0.3deg) scale(1.018);
-  }
-}
-
-@keyframes preview-token-float-warm {
-  from {
-    text-shadow: 0 1px 2px rgb(79 54 43 / 7%);
-    transform: translateY(0.7px) rotate(-0.12deg);
-  }
-
-  to {
-    text-shadow: 0 3px 5px rgb(79 54 43 / 13%);
-    transform: translateY(-2px) rotate(0.14deg);
-  }
-}
-
-@keyframes preview-token-float-calm {
-  from {
-    transform: translateY(0.3px);
-  }
-
-  to {
-    transform: translateY(-1px);
+    text-shadow: 0 3px 6px rgb(79 54 43 / 14%);
+    transform: translateY(0.45px) rotate(0.08deg);
   }
 }
 
@@ -635,7 +616,7 @@ select:focus-visible {
     transition-duration: 0.01ms !important;
   }
 
-  .preview-token__motion,
+  .preview-token__drift,
   .preview-revision-ghost::after {
     animation: none !important;
   }

@@ -1,9 +1,9 @@
 import {
   matchPreviewTokens,
+  samePreviewTokens,
   tokenizePreviewFrame,
   type PreviewFrame,
   type PreviewToken,
-  type PreviewTreatment,
 } from "./preview-model";
 
 type RenderedToken = PreviewToken & {
@@ -11,6 +11,7 @@ type RenderedToken = PreviewToken & {
   element: HTMLSpanElement;
   entry: HTMLSpanElement;
   motion: HTMLSpanElement;
+  drift: HTMLSpanElement;
 };
 
 export type PreviewRendererOptions = {
@@ -53,11 +54,12 @@ export class PreviewRenderer {
     }
 
     const nextTokens = tokenizePreviewFrame(frame);
+    if (samePreviewTokens(this.rendered, nextTokens)) return;
+
     const matches = matchPreviewTokens(this.rendered, nextTokens);
     const matchedPrevious = new Set(matches.filter((index): index is number => index !== undefined));
     const animatedStart = Math.max(0, nextTokens.length - this.animationWindow);
     const oldPositions = this.measurePositions(this.rendered);
-    const previousTreatments = this.rendered.map(({ treatment }) => treatment);
     const rootRect = this.root.getBoundingClientRect();
 
     if (this.animationsEnabled()) {
@@ -79,8 +81,8 @@ export class PreviewRenderer {
       return existing;
     });
 
-    this.content.replaceChildren(...nextRendered.map(({ element }) => element));
-    this.applyTreatments(nextRendered, matches, previousTreatments, animatedStart);
+    this.reconcileContent(nextRendered);
+    this.applyTreatments(nextRendered, animatedStart);
 
     if (this.animationsEnabled()) {
       this.animateLayout(nextRendered, oldPositions, animatedStart);
@@ -111,60 +113,51 @@ export class PreviewRenderer {
     const element = document.createElement("span");
     const entry = document.createElement("span");
     const motion = document.createElement("span");
+    const drift = document.createElement("span");
+    const id = this.nextId++;
     element.className = "preview-token";
     entry.className = "preview-token__entry";
     motion.className = "preview-token__motion";
-    motion.textContent = token.text;
+    drift.className = "preview-token__drift";
+    drift.textContent = token.text;
+    element.style.setProperty("--preview-delay", `${-((id * 137) % 900)}ms`);
+    motion.append(drift);
     entry.append(motion);
     element.append(entry);
-    return { ...token, id: this.nextId++, element, entry, motion };
+    return { ...token, id, element, entry, motion, drift };
   }
 
-  private applyTreatments(
-    tokens: RenderedToken[],
-    matches: Array<number | undefined>,
-    previousTreatments: PreviewTreatment[],
-    animatedStart: number,
-  ): void {
-    const floatingIndices = tokens
-      .map((token, index) => ({ token, index }))
-      .filter(({ token, index }) => token.treatment === "floating" && !token.whitespace && index >= animatedStart)
-      .map(({ index }) => index);
-    const floatingRank = new Map(floatingIndices.map((index, rank) => [index, floatingIndices.length - rank - 1]));
-
+  private applyTreatments(tokens: RenderedToken[], animatedStart: number): void {
     tokens.forEach((token, index) => {
-      const previousIndex = matches[index];
-      const previousTreatment = previousIndex === undefined ? undefined : previousTreatments[previousIndex];
-      const level = motionLevel(floatingRank.get(index));
-      token.element.className = [
+      const className = [
         "preview-token",
         `preview-token--${token.treatment}`,
         token.whitespace ? "preview-token--whitespace" : "",
-        level ? `preview-token--float-${level}` : "",
+        token.treatment === "floating" && !token.whitespace && index >= animatedStart
+          ? "preview-token--drifting"
+          : "",
       ]
         .filter(Boolean)
         .join(" ");
-
-      token.motion.textContent = token.text;
-      token.element.style.setProperty("--preview-delay", `${-((token.id * 137) % 900)}ms`);
-
-      if (
-        this.animationsEnabled() &&
-        previousTreatment === "floating" &&
-        token.treatment === "grounded" &&
-        index >= animatedStart &&
-        !token.whitespace
-      ) {
-        token.entry.animate(
-          [
-            { transform: "translateY(-3px) scale(1.025)", filter: "blur(0.35px)" },
-            { transform: "translateY(1.4px) scale(0.995)", offset: 0.72 },
-            { transform: "translateY(0) scale(1)", filter: "blur(0)" },
-          ],
-          { duration: 410, easing: "cubic-bezier(.2,.82,.28,1)" },
-        );
-      }
+      if (token.element.className !== className) token.element.className = className;
+      if (token.drift.textContent !== token.text) token.drift.textContent = token.text;
     });
+  }
+
+  private reconcileContent(tokens: readonly RenderedToken[]): void {
+    let cursor = this.content.firstChild;
+    for (const { element } of tokens) {
+      if (cursor === element) {
+        cursor = cursor.nextSibling;
+      } else {
+        this.content.insertBefore(element, cursor);
+      }
+    }
+    while (cursor) {
+      const next = cursor.nextSibling;
+      cursor.remove();
+      cursor = next;
+    }
   }
 
   private measurePositions(tokens: readonly RenderedToken[]): Map<number, DOMRect> {
@@ -241,11 +234,4 @@ export class PreviewRenderer {
   private animationsEnabled(): boolean {
     return this.hasRendered && this.supportsWebAnimations && !this.reducedMotion.matches;
   }
-}
-
-function motionLevel(rankFromNewest: number | undefined): "hot" | "warm" | "calm" | undefined {
-  if (rankFromNewest === undefined) return undefined;
-  if (rankFromNewest < 4) return "hot";
-  if (rankFromNewest < 10) return "warm";
-  return "calm";
 }
