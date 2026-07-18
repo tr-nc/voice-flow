@@ -119,21 +119,11 @@ export class PreviewRenderer {
   }
 
   private applyTreatments(tokens: RenderedToken[]): void {
-    tokens.forEach((token, index) => {
-      const processing = token.treatment === "processing";
-      const previous = tokens[index - 1];
-      const next = tokens[index + 1];
-      const processingStart =
-        processing && (!previous || previous.treatment !== "processing" || previous.text.includes("\n"));
-      const processingEnd =
-        processing &&
-        (!next || next.treatment !== "processing" || token.text.includes("\n") || next.text.includes("\n"));
+    tokens.forEach((token) => {
       const className = [
         "preview-token",
         `preview-token--${token.treatment}`,
         token.whitespace ? "preview-token--whitespace" : "",
-        processingStart ? "preview-token--processing-start" : "",
-        processingEnd ? "preview-token--processing-end" : "",
       ]
         .filter(Boolean)
         .join(" ");

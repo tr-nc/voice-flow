@@ -1,6 +1,7 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { toPreviewFrame } from "./preview-adapter";
 import type { PreviewFrame } from "./preview-model";
 import { PreviewRenderer } from "./preview-renderer";
 import "./style.css";
@@ -363,7 +364,7 @@ async function mountDictationOverlay(root: HTMLDivElement) {
   };
 
   const applyRuntime = (next: RuntimeSnapshot) => {
-    pendingPreview = runtimeToPreviewFrame(next);
+    pendingPreview = toPreviewFrame(next.transcript, next.segments ?? []);
     if (previewFrame !== undefined) return;
     previewFrame = window.requestAnimationFrame(() => {
       previewFrame = undefined;
@@ -379,41 +380,6 @@ async function mountDictationOverlay(root: HTMLDivElement) {
   await listen<RuntimeSnapshot>("voice-flow://runtime", ({ payload }) => applyRuntime(payload));
 
   void overlayWindow.onScaleChanged(updateOverlayLayout);
-}
-
-// The only adapter between runtime recognition data and the presentation-only
-// preview contract. The renderer itself accepts processing/settled text from any
-// future producer or model.
-function runtimeToPreviewFrame(snapshot: RuntimeSnapshot): PreviewFrame {
-  const boundary = findDefiniteBoundary(snapshot.transcript, snapshot.segments ?? []);
-  if (!snapshot.transcript) return { chunks: [] };
-  if (!boundary.active) {
-    return { chunks: [{ text: snapshot.transcript, treatment: "processing" }] };
-  }
-
-  const settled = snapshot.transcript.slice(0, boundary.offset);
-  const processing = snapshot.transcript.slice(boundary.offset);
-  return {
-    chunks: [
-      ...(settled ? [{ text: settled, treatment: "settled" as const }] : []),
-      ...(processing ? [{ text: processing, treatment: "processing" as const }] : []),
-    ],
-  };
-}
-
-function findDefiniteBoundary(text: string, segments: TranscriptSegment[]): { offset: number; active: boolean } {
-  if (!text || segments.length === 0) return { offset: text.length, active: false };
-
-  let definitePrefix = "";
-  for (const segment of segments) {
-    if (!segment.definite) break;
-    definitePrefix += segment.text;
-  }
-
-  const safeBoundary = definitePrefix.length > 0 && text.startsWith(definitePrefix);
-  return safeBoundary
-    ? { offset: definitePrefix.length, active: true }
-    : { offset: text.length, active: false };
 }
 
 function populateMicrophones(select: HTMLSelectElement, microphones: Microphone[], selected: string) {
