@@ -14,6 +14,8 @@ export type PreviewChunk = {
 
 export type PreviewFrame = {
   chunks: readonly PreviewChunk[];
+  final?: boolean;
+  prompt?: boolean;
 };
 
 export type PreviewToken = {

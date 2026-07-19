@@ -20,6 +20,7 @@ use crate::shortcut::ShortcutBinding;
 
 const RUNTIME_EVENT: &str = "voice-flow://runtime";
 const COMPLETION_STATUS_DURATION: Duration = Duration::from_millis(150);
+const FINAL_PREVIEW_DURATION: Duration = Duration::from_millis(500);
 const DICTATION_MIN_HEIGHT: u32 = 94;
 const DICTATION_MAX_HEIGHT: u32 = 280;
 const DICTATION_BOTTOM_MARGIN: f64 = 92.0;
@@ -334,16 +335,22 @@ async fn run_session(
                 },
             );
 
+            debug!(
+                duration_ms = FINAL_PREVIEW_DURATION.as_millis(),
+                "holding final transcript in dictation preview"
+            );
+            tokio::time::sleep(FINAL_PREVIEW_DURATION).await;
+            hide_dictation_window(&app);
+
             #[cfg(target_os = "linux")]
             if config.auto_insert {
                 // GNOME Wayland may focus a newly shown overlay even after it
-                // was marked non-focusable. Hide it before injecting paste so
-                // the compositor can return focus to the user's target field.
+                // was marked non-focusable. Give the compositor time to return
+                // focus to the user's target field before injecting paste.
                 debug!(
                     delay_ms = LINUX_FOCUS_RETURN_DELAY.as_millis(),
-                    "hiding Linux overlay before cursor insertion"
+                    "waiting for Linux focus return before cursor insertion"
                 );
-                hide_dictation_window(&app);
                 tokio::time::sleep(LINUX_FOCUS_RETURN_DELAY).await;
             }
 

@@ -71,6 +71,12 @@ export class PreviewRenderer {
   }
 
   render(frame: PreviewFrame): void {
+    const leavingPrompt = !frame.prompt && this.root.classList.contains("is-prompt");
+    const enteringFinal = frame.final === true && !this.root.classList.contains("is-final");
+    if (leavingPrompt || enteringFinal) this.prepareCleanRender();
+    this.root.classList.toggle("is-final", frame.final === true);
+    this.root.classList.toggle("is-prompt", frame.prompt === true);
+
     const accessibleText = frame.chunks.map(({ text }) => text).join("");
     if (!accessibleText) {
       this.clear();
@@ -84,6 +90,7 @@ export class PreviewRenderer {
     const animatedStart = Math.max(0, nextTokens.length - this.animationWindow);
     const oldPositions = this.measurePositions(this.rendered);
     const rootRect = this.root.getBoundingClientRect();
+    const animationsEnabled = this.animationsEnabled() && !frame.final && !frame.prompt;
     this.pinRevisionLayer();
 
     const nextRendered = nextTokens.map((token, nextIndex) => {
@@ -99,7 +106,7 @@ export class PreviewRenderer {
 
     const correctionInsertions = new Set<number>();
     const correctionTransitions: CorrectionTransition[] = [];
-    if (this.animationsEnabled()) {
+    if (animationsEnabled) {
       for (const run of findPreviewRevisionRuns(this.rendered.length, matches)) {
         const previous = this.rendered.slice(run.previousStart, run.previousEnd);
         if (!previous.some((token) => !token.whitespace)) continue;
@@ -120,7 +127,7 @@ export class PreviewRenderer {
     this.reconcileContent(nextRendered);
     this.applyTreatments(nextRendered);
 
-    if (this.animationsEnabled()) {
+    if (animationsEnabled) {
       correctionTransitions.forEach(({ start, end, replaceAfter, marks }) => {
         marks.forEach((mark) => this.removeRevisionMark(mark, true, replaceAfter));
         this.animateCorrectionInsertions(nextRendered, start, end, replaceAfter);
@@ -144,6 +151,8 @@ export class PreviewRenderer {
   clear(): void {
     this.rendered = [];
     this.hasRendered = false;
+    this.root.classList.remove("is-final");
+    this.root.classList.remove("is-prompt");
     this.content.replaceChildren();
     if (this.announcedText) {
       this.announcement.textContent = "";
@@ -152,6 +161,14 @@ export class PreviewRenderer {
     this.revisionMarks.forEach((mark) => {
       mark.element.remove();
     });
+    this.revisionMarks = [];
+  }
+
+  private prepareCleanRender(): void {
+    this.rendered = [];
+    this.hasRendered = false;
+    this.content.replaceChildren();
+    this.revisionMarks.forEach((mark) => mark.element.remove());
     this.revisionMarks = [];
   }
 

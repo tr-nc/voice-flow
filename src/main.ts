@@ -2,20 +2,13 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { toPreviewFrame } from "./preview-adapter";
+import { PreviewFrameQueue } from "./preview-frame-queue";
 import { latestWholeLineScrollTop } from "./preview-layout";
-import type { PreviewFrame } from "./preview-model";
 import { PreviewRenderer } from "./preview-renderer";
+import { toRuntimePreviewFrame, type PreviewRuntimePhase } from "./runtime-preview";
 import "./style.css";
 
 type InteractionMode = "hold" | "toggle";
-type RuntimePhase =
-  | "idle"
-  | "connecting"
-  | "listening"
-  | "finalizing"
-  | "inserting"
-  | "complete"
-  | "error";
 
 type AppConfig = {
   secret_key: string;
@@ -32,7 +25,7 @@ type Microphone = {
 };
 
 type RuntimeSnapshot = {
-  phase: RuntimePhase;
+  phase: PreviewRuntimePhase;
   transcript: string;
   segments: TranscriptSegment[];
   message: string;
@@ -327,9 +320,7 @@ async function mountDictationOverlay(root: HTMLDivElement) {
   // Eight pixels around the panel plus its one-pixel border on each side.
   const overlayVerticalPadding = 18;
   let layoutFrame: number | undefined;
-  let previewFrame: number | undefined;
   let scrollFrame: number | undefined;
-  let pendingPreview: PreviewFrame | undefined;
   let desiredHeight = minOverlayHeight;
   let appliedHeight = 0;
   let resizeLoop: Promise<void> | undefined;
@@ -383,17 +374,21 @@ async function mountDictationOverlay(root: HTMLDivElement) {
   };
 
   const preview = new PreviewRenderer(transcript);
+  const previewFrames = new PreviewFrameQueue(
+    (frame) => {
+      preview.render(frame);
+      updateOverlayLayout();
+    },
+    {
+      request: (callback) => window.requestAnimationFrame(callback),
+      cancel: (frame) => window.cancelAnimationFrame(frame),
+    },
+  );
 
   const applyRuntime = (next: RuntimeSnapshot) => {
-    pendingPreview = toPreviewFrame(next.transcript, next.segments ?? []);
-    if (previewFrame !== undefined) return;
-    previewFrame = window.requestAnimationFrame(() => {
-      previewFrame = undefined;
-      if (!pendingPreview) return;
-      preview.render(pendingPreview);
-      pendingPreview = undefined;
-      updateOverlayLayout();
-    });
+    previewFrames.submit(
+      toRuntimePreviewFrame(next.phase, toPreviewFrame(next.transcript, next.segments ?? [])),
+    );
   };
 
   const runtime = await invoke<RuntimeSnapshot>("get_runtime").catch(() => undefined);
