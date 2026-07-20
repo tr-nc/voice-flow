@@ -83,7 +83,7 @@ pub fn start_monitor(app: AppHandle, handler: fn(&AppHandle, ShortcutEvent)) -> 
         .name("voice-flow-shortcut".to_owned())
         .spawn(move || {
             let Some(device) = DeviceState::checked_new() else {
-                error!("global shortcut monitor requires input monitoring permission; grant permission and restart Voice Flow");
+                error!("global shortcut monitor requires Accessibility permission; grant permission and restart Voice Flow");
                 return;
             };
             info!(poll_interval_ms = POLL_INTERVAL.as_millis(), "global shortcut monitor started");

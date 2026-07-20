@@ -151,7 +151,8 @@ fn setup_status_item(app: &mut tauri::App) -> tauri::Result<()> {
 
     let open_settings =
         MenuItem::with_id(app, "open-settings", "Open Settings", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&open_settings])?;
+    let quit = MenuItem::with_id(app, "quit", "Quit Voice Flow", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&open_settings, &quit])?;
     let tray_icon = tauri::image::Image::from_bytes(include_bytes!("../icons/tray-icon.png"))?;
 
     TrayIconBuilder::with_id("voice-flow")
@@ -163,6 +164,8 @@ fn setup_status_item(app: &mut tauri::App) -> tauri::Result<()> {
         .on_menu_event(|app, event| {
             if event.id() == "open-settings" {
                 show_settings(app);
+            } else if event.id() == "quit" {
+                app.exit(0);
             }
         })
         .build(app)?;

@@ -23,6 +23,7 @@ npm ci
 case "$(uname -s)" in
   Darwin)
     require_command ditto
+    require_command codesign
 
     printf 'Building the macOS application...\n'
     npm run tauri -- build --bundles app
@@ -35,9 +36,21 @@ case "$(uname -s)" in
     rm -rf "$installed_app"
     ditto "$source_app" "$installed_app"
 
+    # Tauri's unsigned local build contains only a linker-generated signature.
+    # Sign the complete bundle so macOS can associate Accessibility permission
+    # with the installed application instead of rejecting its executable.
+    printf 'Signing the macOS application for local use...\n'
+    codesign --force --deep --sign - --identifier dev.voiceflow.desktop "$installed_app"
+    codesign --verify --deep --strict "$installed_app"
+
     printf '\nInstalled Voice Flow at:\n  %s\n' "$installed_app"
     printf 'Launch it with:\n  open "%s"\n' "$installed_app"
-    printf 'On first launch, grant Microphone and Accessibility access when macOS asks.\n'
+    printf '\nmacOS permission setup (required for shortcuts and automatic paste):\n'
+    printf '  1. In System Settings, open Privacy & Security > Accessibility.\n'
+    printf '  2. Click +, select "%s", and turn Voice Flow on.\n' "$installed_app"
+    printf '  3. If Voice Flow is already enabled but the shortcut does not work, remove it with -, add it again, and turn it on.\n'
+    printf '  4. Fully quit and reopen Voice Flow after changing the permission.\n'
+    printf 'macOS will request Microphone access separately when dictation first starts.\n'
     ;;
 
   Linux)

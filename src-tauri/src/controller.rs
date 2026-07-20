@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use futures_util::FutureExt;
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, PhysicalSize};
+use tauri::{AppHandle, Emitter, Manager, PhysicalSize};
 use tokio::sync::oneshot;
 use tracing::{Instrument, debug, error, info, info_span, warn};
 use uuid::Uuid;
@@ -23,7 +23,6 @@ const COMPLETION_STATUS_DURATION: Duration = Duration::from_millis(150);
 const FINAL_PREVIEW_DURATION: Duration = Duration::from_millis(500);
 const DICTATION_MIN_HEIGHT: u32 = 94;
 const DICTATION_MAX_HEIGHT: u32 = 280;
-const DICTATION_BOTTOM_MARGIN: f64 = 92.0;
 #[cfg(target_os = "linux")]
 const LINUX_FOCUS_RETURN_DELAY: Duration = Duration::from_millis(120);
 
@@ -599,13 +598,13 @@ fn show_dictation_window(app: &AppHandle) -> Result<(), String> {
         let monitor_position = monitor.position();
         let monitor_size = monitor.size();
         if let Ok(window_size) = window.outer_size() {
-            let x = monitor_position.x
-                + ((monitor_size.width.saturating_sub(window_size.width)) / 2) as i32;
-            let bottom_margin = (DICTATION_BOTTOM_MARGIN * monitor.scale_factor()) as i32;
-            let y = monitor_position.y + monitor_size.height as i32
-                - window_size.height as i32
-                - bottom_margin;
-            let _ = window.set_position(PhysicalPosition::new(x, y));
+            let position = platform::dictation_overlay_position(
+                monitor_position,
+                monitor_size,
+                &window_size,
+                monitor.scale_factor(),
+            );
+            let _ = window.set_position(position);
         }
     }
 
@@ -645,13 +644,14 @@ pub fn resize_dictation_overlay(app: &AppHandle, height: u32) -> Result<(), Stri
     }) {
         let monitor_position = monitor.position();
         let monitor_size = monitor.size();
-        let x = monitor_position.x
-            + ((monitor_size.width.saturating_sub(current_size.width)) / 2) as i32;
-        let bottom_margin = (DICTATION_BOTTOM_MARGIN * monitor.scale_factor()) as i32;
-        let y = monitor_position.y + monitor_size.height as i32
-            - physical_height as i32
-            - bottom_margin;
-        if let Err(error) = window.set_position(PhysicalPosition::new(x, y)) {
+        let resized = PhysicalSize::new(current_size.width, physical_height);
+        let position = platform::dictation_overlay_position(
+            monitor_position,
+            monitor_size,
+            &resized,
+            monitor.scale_factor(),
+        );
+        if let Err(error) = window.set_position(position) {
             warn!(%error, "the window manager cannot reposition the resized dictation overlay");
         }
     }
