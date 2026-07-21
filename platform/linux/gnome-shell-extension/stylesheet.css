@@ -1,0 +1,25 @@
+.voice-flow-preview {
+  width: 720px;
+  padding: 12px 16px 38px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 13px;
+  background-color: rgba(37, 39, 44, 0.88);
+  box-shadow: none;
+}
+
+.voice-flow-preview-label {
+  width: 684px;
+  color: #b8c4bc;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.voice-flow-preview-label-prompt {
+  color: #9297a0;
+  font-style: italic;
+  font-weight: 400;
+}
+
+.voice-flow-preview-label-final {
+  color: #79d6a5;
+}

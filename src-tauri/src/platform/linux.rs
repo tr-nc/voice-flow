@@ -11,7 +11,7 @@ use evdev::{AttributeSet, KeyCode, KeyEvent, uinput::VirtualDevice};
 use gtk::prelude::*;
 use tracing::{debug, info, warn};
 
-use super::TextInjector;
+use super::{TextInjector, linux_overlay, linux_shell_overlay};
 
 const CLIPBOARD_SETTLE_DELAY: Duration = Duration::from_millis(70);
 const VIRTUAL_DEVICE_SETTLE_DELAY: Duration = Duration::from_millis(120);
@@ -150,6 +150,13 @@ fn copy_with_arboard(text: &str) -> Result<()> {
 
 pub fn initialize() -> Result<()> {
     drop(paste_device()?);
+    let shell_overlay_available = linux_shell_overlay::initialize()?;
+    if let Err(error) = linux_overlay::initialize() {
+        if !shell_overlay_available {
+            return Err(error);
+        }
+        warn!(%error, "could not initialize the X11 dictation preview fallback");
+    }
     Ok(())
 }
 
@@ -191,6 +198,32 @@ pub fn initialize_settings_window(window: &tauri::WebviewWindow) {
         above_child = event_box.is_above_child(),
         "initialized clickable Wayland settings window controls"
     );
+}
+
+pub fn activate_external_dictation_overlay() -> bool {
+    linux_shell_overlay::is_available() || linux_overlay::is_available()
+}
+
+pub fn select_external_dictation_monitor(
+    name: Option<&str>,
+    physical_width: u32,
+    physical_height: u32,
+    scale: f64,
+) {
+    linux_overlay::select_monitor(name, physical_width, physical_height, scale);
+}
+
+pub fn publish_external_dictation_preview(phase: &str, text: &str, message: &str) {
+    if linux_shell_overlay::is_available() {
+        linux_shell_overlay::show(phase, text, message);
+    } else {
+        linux_overlay::show(phase, text, message);
+    }
+}
+
+pub fn hide_external_dictation_preview() {
+    linux_shell_overlay::hide();
+    linux_overlay::hide();
 }
 
 fn primary_gpu_is_nvidia() -> bool {

@@ -8,6 +8,11 @@ mod logging;
 mod platform;
 mod shortcut;
 
+#[cfg(target_os = "linux")]
+pub fn run_linux_overlay_helper() -> Result<(), String> {
+    platform::run_overlay_helper().map_err(|error| error.to_string())
+}
+
 #[cfg(target_os = "macos")]
 use tauri::{
     ActivationPolicy,

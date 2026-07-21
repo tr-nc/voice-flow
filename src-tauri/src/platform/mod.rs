@@ -5,9 +5,6 @@ use anyhow::Result;
 use arboard::Clipboard;
 use tauri::{PhysicalPosition, PhysicalSize};
 
-#[cfg(not(target_os = "macos"))]
-const DICTATION_BOTTOM_MARGIN: f64 = 92.0;
-
 pub trait TextInjector {
     fn insert_at_active_cursor(&self, text: &str) -> Result<()>;
 }
@@ -19,6 +16,10 @@ use macos::MacOsTextInjector as CurrentTextInjector;
 
 #[cfg(target_os = "linux")]
 mod linux;
+#[cfg(target_os = "linux")]
+mod linux_overlay;
+#[cfg(target_os = "linux")]
+mod linux_shell_overlay;
 #[cfg(target_os = "linux")]
 use linux::LinuxTextInjector as CurrentTextInjector;
 
@@ -49,6 +50,42 @@ pub fn initialize_settings_window(window: &tauri::WebviewWindow) {
     unsupported::initialize_settings_window(window);
 }
 
+pub fn activate_external_dictation_overlay() -> bool {
+    #[cfg(target_os = "linux")]
+    return linux::activate_external_dictation_overlay();
+    #[cfg(not(target_os = "linux"))]
+    false
+}
+
+pub fn select_external_dictation_monitor(
+    name: Option<&str>,
+    physical_width: u32,
+    physical_height: u32,
+    scale: f64,
+) {
+    #[cfg(target_os = "linux")]
+    linux::select_external_dictation_monitor(name, physical_width, physical_height, scale);
+    #[cfg(not(target_os = "linux"))]
+    let _ = (name, physical_width, physical_height, scale);
+}
+
+pub fn publish_dictation_preview(phase: &str, text: &str, message: &str) {
+    #[cfg(target_os = "linux")]
+    linux::publish_external_dictation_preview(phase, text, message);
+    #[cfg(not(target_os = "linux"))]
+    let _ = (phase, text, message);
+}
+
+pub fn hide_external_dictation_overlay() {
+    #[cfg(target_os = "linux")]
+    linux::hide_external_dictation_preview();
+}
+
+#[cfg(target_os = "linux")]
+pub fn run_overlay_helper() -> Result<()> {
+    linux_overlay::run_helper()
+}
+
 pub fn insert_at_active_cursor(text: &str) -> Result<()> {
     CurrentTextInjector.insert_at_active_cursor(text)
 }
@@ -64,22 +101,12 @@ pub fn dictation_overlay_position(
     monitor_position: &PhysicalPosition<i32>,
     monitor_size: &PhysicalSize<u32>,
     overlay_size: &PhysicalSize<u32>,
-    scale_factor: f64,
+    _scale_factor: f64,
 ) -> PhysicalPosition<i32> {
     let x =
         monitor_position.x + ((monitor_size.width.saturating_sub(overlay_size.width)) / 2) as i32;
-
-    #[cfg(target_os = "macos")]
     let y =
         monitor_position.y + ((monitor_size.height.saturating_sub(overlay_size.height)) / 2) as i32;
-
-    #[cfg(not(target_os = "macos"))]
-    let y = monitor_position.y + monitor_size.height as i32
-        - overlay_size.height as i32
-        - (DICTATION_BOTTOM_MARGIN * scale_factor) as i32;
-
-    #[cfg(target_os = "macos")]
-    let _ = scale_factor;
 
     PhysicalPosition::new(x, y)
 }
@@ -113,9 +140,8 @@ mod tests {
         assert_eq!(position, PhysicalPosition::new(-1320, 493));
     }
 
-    #[cfg(not(target_os = "macos"))]
     #[test]
-    fn keeps_dictation_overlay_near_the_bottom_on_other_platforms() {
+    fn centers_dictation_overlay_with_positive_origin() {
         let position = dictation_overlay_position(
             &PhysicalPosition::new(0, 0),
             &PhysicalSize::new(1920, 1080),
@@ -123,6 +149,6 @@ mod tests {
             1.0,
         );
 
-        assert_eq!(position, PhysicalPosition::new(600, 894));
+        assert_eq!(position, PhysicalPosition::new(600, 493));
     }
 }

@@ -1,0 +1,7 @@
+{
+  "uuid": "voice-flow-preview-shell@dev.voiceflow.desktop",
+  "name": "Voice Flow Preview",
+  "description": "Shows the Voice Flow dictation preview above fullscreen windows.",
+  "shell-version": ["48", "49"],
+  "version": 2
+}

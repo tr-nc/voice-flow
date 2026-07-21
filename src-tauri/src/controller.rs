@@ -499,6 +499,7 @@ async fn finish_session_after(app: &AppHandle, delay: Duration) {
 }
 
 fn publish_runtime(app: &AppHandle, snapshot: RuntimeSnapshot) {
+    platform::publish_dictation_preview(&snapshot.phase, &snapshot.transcript, &snapshot.message);
     *lock(&app.state::<AppState>().runtime) = snapshot.clone();
     let _ = app.emit(RUNTIME_EVENT, snapshot);
 }
@@ -552,19 +553,6 @@ fn show_dictation_window(app: &AppHandle) -> Result<(), String> {
         .get_webview_window("dictation")
         .ok_or_else(|| "dictation window is unavailable".to_owned())?;
 
-    if let Err(error) = window.set_focusable(false) {
-        #[cfg(target_os = "linux")]
-        warn!(%error, "the Linux window manager cannot mark the dictation overlay as non-focusable");
-        #[cfg(not(target_os = "linux"))]
-        return Err(format!(
-            "failed to keep the dictation window unfocused: {error}"
-        ));
-    }
-    #[cfg(not(target_os = "linux"))]
-    window
-        .set_ignore_cursor_events(true)
-        .map_err(|error| format!("failed to make the dictation window click-through: {error}"))?;
-
     let target_monitor = platform::focused_window_center()
         .and_then(|(x, y)| window.monitor_from_point(x, y).ok().flatten())
         .map(|monitor| (monitor, "focused-window"))
@@ -588,6 +576,29 @@ fn show_dictation_window(app: &AppHandle) -> Result<(), String> {
                 .map(|monitor| (monitor, "overlay"))
         });
 
+    if platform::activate_external_dictation_overlay() {
+        if let Some((monitor, source)) = target_monitor {
+            let size = monitor.size();
+            let name = monitor.name();
+            debug!(
+                source,
+                monitor = ?name,
+                position = ?monitor.position(),
+                size = ?size,
+                scale = monitor.scale_factor(),
+                "selecting external dictation overlay monitor"
+            );
+            platform::select_external_dictation_monitor(
+                name.map(String::as_str),
+                size.width,
+                size.height,
+                monitor.scale_factor(),
+            );
+        }
+        return Ok(());
+    }
+
+    configure_dictation_window(&window)?;
     if let Some((monitor, source)) = target_monitor {
         debug!(
             source,
@@ -608,6 +619,27 @@ fn show_dictation_window(app: &AppHandle) -> Result<(), String> {
         }
     }
 
+    map_dictation_window(&window)?;
+    Ok(())
+}
+
+fn configure_dictation_window(window: &tauri::WebviewWindow) -> Result<(), String> {
+    if let Err(error) = window.set_focusable(false) {
+        #[cfg(target_os = "linux")]
+        warn!(%error, "the Linux window manager cannot mark the dictation overlay as non-focusable");
+        #[cfg(not(target_os = "linux"))]
+        return Err(format!(
+            "failed to keep the dictation window unfocused: {error}"
+        ));
+    }
+    #[cfg(not(target_os = "linux"))]
+    window
+        .set_ignore_cursor_events(true)
+        .map_err(|error| format!("failed to make the dictation window click-through: {error}"))?;
+    Ok(())
+}
+
+fn map_dictation_window(window: &tauri::WebviewWindow) -> Result<(), String> {
     window
         .show()
         .map_err(|error| format!("failed to show the dictation window: {error}"))?;
@@ -622,6 +654,9 @@ fn show_dictation_window(app: &AppHandle) -> Result<(), String> {
 }
 
 pub fn resize_dictation_overlay(app: &AppHandle, height: u32) -> Result<(), String> {
+    if platform::activate_external_dictation_overlay() {
+        return Ok(());
+    }
     let window = app
         .get_webview_window("dictation")
         .ok_or_else(|| "dictation window is unavailable".to_owned())?;
@@ -660,8 +695,12 @@ pub fn resize_dictation_overlay(app: &AppHandle, height: u32) -> Result<(), Stri
 }
 
 fn hide_dictation_window(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window("dictation") {
-        let _ = window.hide();
+    platform::hide_external_dictation_overlay();
+    if let Some(window) = app.get_webview_window("dictation")
+        && window.is_visible().unwrap_or(false)
+        && let Err(error) = window.hide()
+    {
+        warn!(%error, "failed to hide dictation window");
     }
 }
 

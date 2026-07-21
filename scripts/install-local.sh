@@ -61,6 +61,10 @@ case "$(uname -s)" in
     installed_binary="$HOME/.local/bin/voice-flow"
     desktop_file="$HOME/.local/share/applications/voice-flow.desktop"
     icon_file="$HOME/.local/share/icons/hicolor/128x128/apps/dev.voiceflow.desktop.png"
+    extension_uuid="voice-flow-preview-shell@dev.voiceflow.desktop"
+    legacy_extension_uuid="voice-flow-preview@dev.voiceflow.desktop"
+    source_extension="$repo_root/platform/linux/gnome-shell-extension"
+    installed_extension="$HOME/.local/share/gnome-shell/extensions/$extension_uuid"
     [ -x "$source_binary" ] || fail "Tauri did not create $source_binary"
 
     install -d "$HOME/.local/bin"
@@ -91,8 +95,38 @@ case "$(uname -s)" in
       update-desktop-database "$HOME/.local/share/applications" >/dev/null 2>&1 || true
     fi
 
+    install -d "$installed_extension"
+    install -m 0644 "$source_extension/metadata.json" "$installed_extension/metadata.json"
+    install -m 0644 "$source_extension/extension.js" "$installed_extension/extension.js"
+    install -m 0644 "$source_extension/stylesheet.css" "$installed_extension/stylesheet.css"
+
+    if command -v gnome-extensions >/dev/null 2>&1; then
+      gnome-extensions disable "$legacy_extension_uuid" >/dev/null 2>&1 || true
+    fi
+    if command -v gsettings >/dev/null 2>&1 &&
+       gsettings writable org.gnome.shell enabled-extensions >/dev/null 2>&1; then
+      enabled_extensions=$(gsettings get org.gnome.shell enabled-extensions)
+      case "$enabled_extensions" in
+        *"'$extension_uuid'"*) ;;
+        "[]"|"@as []")
+          gsettings set org.gnome.shell enabled-extensions "['$extension_uuid']"
+          ;;
+        *)
+          enabled_extensions=${enabled_extensions%]}
+          gsettings set org.gnome.shell enabled-extensions "$enabled_extensions, '$extension_uuid']"
+          ;;
+      esac
+    fi
+    if command -v gnome-extensions >/dev/null 2>&1; then
+      gnome-extensions enable "$extension_uuid" >/dev/null 2>&1 || true
+    fi
+
     printf '\nInstalled Voice Flow at:\n  %s\n' "$installed_binary"
     printf 'Launch Voice Flow from the application menu or run:\n  %s\n' "$installed_binary"
+    if command -v gnome-extensions >/dev/null 2>&1 &&
+       ! gnome-extensions info "$extension_uuid" >/dev/null 2>&1; then
+      printf 'GNOME Shell must be signed out and back in once to load the fullscreen preview extension.\n'
+    fi
 
     if ! id -nG | tr ' ' '\n' | grep -qx input; then
       printf '\nwarning: this login session is not in the input group.\n' >&2
