@@ -5,8 +5,15 @@ pub trait TextInjector {
     fn insert_at_active_cursor(&self, text: &str) -> InsertionReport;
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ClipboardFinalization {
+    KeepTranscript,
+    RestoreOriginal,
+}
+
 #[derive(Debug)]
 pub enum ClipboardRestoreStatus {
+    TranscriptCopied,
     Restored,
     OriginalUnavailable,
     SkippedExternalChange,
@@ -16,6 +23,7 @@ pub enum ClipboardRestoreStatus {
 impl ClipboardRestoreStatus {
     pub fn as_str(&self) -> &'static str {
         match self {
+            Self::TranscriptCopied => "transcript_copied",
             Self::Restored => "restored",
             Self::OriginalUnavailable => "original_unavailable",
             Self::SkippedExternalChange => "skipped_external_change",
@@ -59,7 +67,11 @@ impl InsertionReport {
 
     pub fn insertion_status(&self) -> &'static str {
         match (self.succeeded(), &self.clipboard_restore) {
+            (false, Some(ClipboardRestoreStatus::TranscriptCopied)) => "failed_transcript_copied",
             (false, _) => "failed_clipboard",
+            (true, Some(ClipboardRestoreStatus::TranscriptCopied)) => {
+                "inserted_clipboard_transcript_copied"
+            }
             (true, Some(ClipboardRestoreStatus::Restored)) => "inserted_clipboard_restored",
             (true, Some(ClipboardRestoreStatus::OriginalUnavailable)) => {
                 "inserted_clipboard_original_unavailable"
@@ -75,6 +87,9 @@ impl InsertionReport {
     pub fn notice(&self) -> Option<&'static str> {
         if !self.succeeded() {
             return Some(match &self.clipboard_restore {
+                Some(ClipboardRestoreStatus::TranscriptCopied) => {
+                    "Insertion failed · copied to clipboard"
+                }
                 Some(ClipboardRestoreStatus::Restored) => {
                     "Insertion failed · plain-text clipboard restored"
                 }
@@ -85,12 +100,15 @@ impl InsertionReport {
                     "Insertion failed · non-text clipboard not restored"
                 }
                 Some(ClipboardRestoreStatus::Failed(_)) => {
-                    "Insertion failed · clipboard restore also failed"
+                    "Insertion failed · copying to clipboard also failed"
                 }
                 None => "Insertion failed",
             });
         }
         match &self.clipboard_restore {
+            Some(ClipboardRestoreStatus::TranscriptCopied) => {
+                Some("Inserted · transcript kept in clipboard")
+            }
             Some(ClipboardRestoreStatus::Restored) => None,
             Some(ClipboardRestoreStatus::OriginalUnavailable) => {
                 Some("Inserted · non-text clipboard not restored")
@@ -101,6 +119,22 @@ impl InsertionReport {
             Some(ClipboardRestoreStatus::Failed(_)) => Some("Inserted · clipboard restore failed"),
             None => Some("Inserted · clipboard restore was not attempted"),
         }
+    }
+}
+
+fn finish_clipboard_insertion(
+    insertion_error: Option<String>,
+    finalize_clipboard: impl FnOnce(ClipboardFinalization) -> ClipboardRestoreStatus,
+) -> InsertionReport {
+    let finalization = if insertion_error.is_some() {
+        ClipboardFinalization::KeepTranscript
+    } else {
+        ClipboardFinalization::RestoreOriginal
+    };
+    let clipboard_restore = finalize_clipboard(finalization);
+    InsertionReport {
+        insertion_error,
+        clipboard_restore: Some(clipboard_restore),
     }
 }
 
@@ -231,6 +265,57 @@ mod tests {
             changed.notice(),
             Some("Inserted · newer clipboard content kept")
         );
+    }
+
+    #[test]
+    fn failed_insertion_keeps_transcript_in_clipboard() {
+        let original = "original clipboard";
+        let transcript = "words that failed to insert";
+        let mut clipboard = transcript.to_owned();
+
+        let report =
+            finish_clipboard_insertion(
+                Some("paste was blocked".to_owned()),
+                |action| match action {
+                    ClipboardFinalization::KeepTranscript => {
+                        clipboard = transcript.to_owned();
+                        ClipboardRestoreStatus::TranscriptCopied
+                    }
+                    ClipboardFinalization::RestoreOriginal => {
+                        clipboard = original.to_owned();
+                        ClipboardRestoreStatus::Restored
+                    }
+                },
+            );
+
+        assert_eq!(clipboard, transcript);
+        assert_eq!(report.insertion_status(), "failed_transcript_copied");
+        assert_eq!(
+            report.notice(),
+            Some("Insertion failed · copied to clipboard")
+        );
+    }
+
+    #[test]
+    fn successful_insertion_restores_original_clipboard() {
+        let original = "original clipboard";
+        let transcript = "inserted words";
+        let mut clipboard = transcript.to_owned();
+
+        let report = finish_clipboard_insertion(None, |action| match action {
+            ClipboardFinalization::KeepTranscript => {
+                clipboard = transcript.to_owned();
+                ClipboardRestoreStatus::TranscriptCopied
+            }
+            ClipboardFinalization::RestoreOriginal => {
+                clipboard = original.to_owned();
+                ClipboardRestoreStatus::Restored
+            }
+        });
+
+        assert_eq!(clipboard, original);
+        assert_eq!(report.insertion_status(), "inserted_clipboard_restored");
+        assert_eq!(report.notice(), None);
     }
 
     #[cfg(target_os = "macos")]

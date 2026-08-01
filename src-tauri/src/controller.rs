@@ -367,7 +367,11 @@ async fn run_session(
                         .clipboard_restore()
                         .and_then(|restore| restore.error())
                     {
-                        warn!(%error, "clipboard insertion could not restore the original text");
+                        if report.succeeded() {
+                            warn!(%error, "clipboard insertion could not restore the original text");
+                        } else {
+                            warn!(%error, "clipboard insertion could not keep the transcript as a fallback");
+                        }
                     }
 
                     let insertion_error = report.insertion_error().map(str::to_owned);

@@ -9,7 +9,10 @@ use objc2_app_kit::NSPasteboard;
 use objc2_application_services::{AXError, AXUIElement, AXValue, AXValueType};
 use objc2_core_foundation::{CFRetained, CFString, CFType, CGPoint, CGSize, ConcreteType};
 
-use super::{ClipboardRestoreStatus, InsertionReport, TextInjector};
+use super::{
+    ClipboardFinalization, ClipboardRestoreStatus, InsertionReport, TextInjector,
+    finish_clipboard_insertion,
+};
 
 const CLIPBOARD_SETTLE_DELAY: Duration = Duration::from_millis(70);
 const CLIPBOARD_RESTORE_DELAY: Duration = Duration::from_millis(120);
@@ -101,15 +104,18 @@ impl TextInjector for MacOsTextInjector {
         let insertion_error = emit_paste().err().map(|error| error.to_string());
         thread::sleep(CLIPBOARD_RESTORE_DELAY);
 
-        let restore = if pasteboard.changeCount() != temporary_change_count {
-            ClipboardRestoreStatus::SkippedExternalChange
-        } else {
-            restore_clipboard_text(&mut clipboard, original)
-        };
-        InsertionReport {
-            insertion_error,
-            clipboard_restore: Some(restore),
-        }
+        finish_clipboard_insertion(insertion_error, |action| match action {
+            ClipboardFinalization::KeepTranscript => {
+                keep_clipboard_transcript(&mut clipboard, text)
+            }
+            ClipboardFinalization::RestoreOriginal => {
+                if pasteboard.changeCount() != temporary_change_count {
+                    ClipboardRestoreStatus::SkippedExternalChange
+                } else {
+                    restore_clipboard_text(&mut clipboard, original)
+                }
+            }
+        })
     }
 }
 
@@ -147,6 +153,16 @@ fn restore_clipboard_text(
     match result {
         Ok(()) if restored => ClipboardRestoreStatus::Restored,
         Ok(()) => ClipboardRestoreStatus::OriginalUnavailable,
+        Err(error) => ClipboardRestoreStatus::Failed(error.to_string()),
+    }
+}
+
+fn keep_clipboard_transcript(
+    clipboard: &mut Clipboard,
+    transcript: &str,
+) -> ClipboardRestoreStatus {
+    match clipboard.set_text(transcript.to_owned()) {
+        Ok(()) => ClipboardRestoreStatus::TranscriptCopied,
         Err(error) => ClipboardRestoreStatus::Failed(error.to_string()),
     }
 }

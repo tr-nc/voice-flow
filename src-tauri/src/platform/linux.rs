@@ -12,7 +12,8 @@ use gtk::prelude::*;
 use tracing::{debug, info, warn};
 
 use super::{
-    ClipboardRestoreStatus, InsertionReport, TextInjector, linux_overlay, linux_shell_overlay,
+    ClipboardFinalization, ClipboardRestoreStatus, InsertionReport, TextInjector,
+    finish_clipboard_insertion, linux_overlay, linux_shell_overlay,
 };
 
 const CLIPBOARD_SETTLE_DELAY: Duration = Duration::from_millis(70);
@@ -108,10 +109,9 @@ fn insert_with_wayland_clipboard(text: &str) -> InsertionReport {
         Err(error) => return InsertionReport::failed_before_publish(error.to_string()),
     };
     if let Err(error) = wait_for_wayland_clipboard_publication(&mut owner, text) {
-        return InsertionReport {
-            insertion_error: Some(error.to_string()),
-            clipboard_restore: Some(restore_owned_wayland_clipboard(&mut owner, original)),
-        };
+        return finish_clipboard_insertion(Some(error.to_string()), |action| {
+            finalize_owned_wayland_clipboard(action, &mut owner, text, original)
+        });
     }
 
     let insertion_error = emit_virtual_paste().err().map(|error| error.to_string());
@@ -123,11 +123,9 @@ fn insert_with_wayland_clipboard(text: &str) -> InsertionReport {
         "waiting for Wayland paste data handoff"
     );
     thread::sleep(CLIPBOARD_RESTORE_DELAY);
-    let restore = restore_owned_wayland_clipboard(&mut owner, original);
-    InsertionReport {
-        insertion_error,
-        clipboard_restore: Some(restore),
-    }
+    finish_clipboard_insertion(insertion_error, |action| {
+        finalize_owned_wayland_clipboard(action, &mut owner, text, original)
+    })
 }
 
 fn insert_with_x11_clipboard(text: &str) -> InsertionReport {
@@ -150,14 +148,13 @@ fn insert_with_x11_clipboard(text: &str) -> InsertionReport {
     let insertion_error = emit_virtual_paste().err().map(|error| error.to_string());
     thread::sleep(CLIPBOARD_RESTORE_DELAY);
 
-    let restore = match clipboard.get_text() {
-        Ok(current) if current == text => restore_arboard_text(&mut clipboard, original),
-        Ok(_) | Err(_) => ClipboardRestoreStatus::SkippedExternalChange,
-    };
-    InsertionReport {
-        insertion_error,
-        clipboard_restore: Some(restore),
-    }
+    finish_clipboard_insertion(insertion_error, |action| match action {
+        ClipboardFinalization::KeepTranscript => keep_arboard_transcript(&mut clipboard, text),
+        ClipboardFinalization::RestoreOriginal => match clipboard.get_text() {
+            Ok(current) if current == text => restore_arboard_text(&mut clipboard, original),
+            Ok(_) | Err(_) => ClipboardRestoreStatus::SkippedExternalChange,
+        },
+    })
 }
 
 fn read_wayland_text() -> Option<String> {
@@ -304,6 +301,29 @@ fn restore_owned_wayland_clipboard(
     }
 }
 
+fn finalize_owned_wayland_clipboard(
+    action: ClipboardFinalization,
+    owner: &mut Child,
+    transcript: &str,
+    original: Option<String>,
+) -> ClipboardRestoreStatus {
+    match action {
+        ClipboardFinalization::KeepTranscript => keep_owned_wayland_transcript(owner, transcript),
+        ClipboardFinalization::RestoreOriginal => restore_owned_wayland_clipboard(owner, original),
+    }
+}
+
+fn keep_owned_wayland_transcript(owner: &mut Child, transcript: &str) -> ClipboardRestoreStatus {
+    let publish_result = publish_wayland_text(transcript);
+    if let Err(error) = stop_clipboard_owner(owner) {
+        warn!(%error, "failed to reap the temporary Wayland clipboard owner");
+    }
+    match publish_result {
+        Ok(()) => ClipboardRestoreStatus::TranscriptCopied,
+        Err(error) => ClipboardRestoreStatus::Failed(error.to_string()),
+    }
+}
+
 fn restore_wayland_text(original: Option<String>) -> ClipboardRestoreStatus {
     let (result, restored) = match original {
         Some(original) => (publish_wayland_text(&original), true),
@@ -327,6 +347,13 @@ fn restore_arboard_text(
     match result {
         Ok(()) if restored => ClipboardRestoreStatus::Restored,
         Ok(()) => ClipboardRestoreStatus::OriginalUnavailable,
+        Err(error) => ClipboardRestoreStatus::Failed(error.to_string()),
+    }
+}
+
+fn keep_arboard_transcript(clipboard: &mut Clipboard, transcript: &str) -> ClipboardRestoreStatus {
+    match clipboard.set_text(transcript.to_owned()) {
+        Ok(()) => ClipboardRestoreStatus::TranscriptCopied,
         Err(error) => ClipboardRestoreStatus::Failed(error.to_string()),
     }
 }
