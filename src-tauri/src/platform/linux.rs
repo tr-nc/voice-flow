@@ -3,20 +3,22 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::sync::{Mutex, MutexGuard};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
 use arboard::Clipboard;
 use evdev::{AttributeSet, KeyCode, KeyEvent, uinput::VirtualDevice};
 use gtk::prelude::*;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use super::{
     ClipboardRestoreStatus, InsertionReport, TextInjector, linux_overlay, linux_shell_overlay,
 };
 
 const CLIPBOARD_SETTLE_DELAY: Duration = Duration::from_millis(70);
-const CLIPBOARD_RESTORE_DELAY: Duration = Duration::from_millis(120);
+const WAYLAND_CLIPBOARD_PUBLISH_TIMEOUT: Duration = Duration::from_millis(500);
+const WAYLAND_CLIPBOARD_PUBLISH_POLL_DELAY: Duration = Duration::from_millis(10);
+const CLIPBOARD_RESTORE_DELAY: Duration = Duration::from_millis(500);
 const VIRTUAL_DEVICE_SETTLE_DELAY: Duration = Duration::from_millis(120);
 const KEYSTROKE_DELAY: Duration = Duration::from_millis(18);
 // systemd's input_id classifies an event device as a keyboard only when it
@@ -105,41 +107,23 @@ fn insert_with_wayland_clipboard(text: &str) -> InsertionReport {
         Ok(owner) => owner,
         Err(error) => return InsertionReport::failed_before_publish(error.to_string()),
     };
-    thread::sleep(CLIPBOARD_SETTLE_DELAY);
-    match owner.try_wait() {
-        Ok(None) => {}
-        Ok(Some(status)) => {
-            return InsertionReport {
-                insertion_error: Some(format!(
-                    "Wayland clipboard ownership was lost before paste with status {status}"
-                )),
-                clipboard_restore: Some(ClipboardRestoreStatus::SkippedExternalChange),
-            };
-        }
-        Err(error) => {
-            return InsertionReport {
-                insertion_error: Some(format!(
-                    "failed to inspect the Wayland clipboard owner: {error}"
-                )),
-                clipboard_restore: Some(ClipboardRestoreStatus::Failed(
-                    "could not safely determine clipboard ownership".to_owned(),
-                )),
-            };
-        }
+    if let Err(error) = wait_for_wayland_clipboard_publication(&mut owner, text) {
+        return InsertionReport {
+            insertion_error: Some(error.to_string()),
+            clipboard_restore: Some(restore_owned_wayland_clipboard(&mut owner, original)),
+        };
     }
 
     let insertion_error = emit_virtual_paste().err().map(|error| error.to_string());
+    // Wayland paste is asynchronous: a successful uinput write only queues the
+    // shortcut. Keep serving the temporary selection long enough for the
+    // focused client to request every text representation it needs.
+    debug!(
+        delay_ms = CLIPBOARD_RESTORE_DELAY.as_millis(),
+        "waiting for Wayland paste data handoff"
+    );
     thread::sleep(CLIPBOARD_RESTORE_DELAY);
-    let restore = match owner.try_wait() {
-        Ok(None) => match stop_clipboard_owner(&mut owner) {
-            Ok(()) => restore_wayland_text(original),
-            Err(error) => ClipboardRestoreStatus::Failed(error.to_string()),
-        },
-        Ok(Some(_)) => ClipboardRestoreStatus::SkippedExternalChange,
-        Err(error) => ClipboardRestoreStatus::Failed(format!(
-            "failed to inspect the Wayland clipboard owner before restore: {error}"
-        )),
-    };
+    let restore = restore_owned_wayland_clipboard(&mut owner, original);
     InsertionReport {
         insertion_error,
         clipboard_restore: Some(restore),
@@ -207,6 +191,54 @@ fn publish_wayland_text_foreground(text: &str) -> Result<Child> {
     Ok(child)
 }
 
+fn wait_for_wayland_clipboard_publication(owner: &mut Child, text: &str) -> Result<()> {
+    let elapsed = wait_for_confirmed_clipboard_publication(
+        WAYLAND_CLIPBOARD_PUBLISH_TIMEOUT,
+        WAYLAND_CLIPBOARD_PUBLISH_POLL_DELAY,
+        || {
+            match owner.try_wait() {
+                Ok(None) => {}
+                Ok(Some(status)) => {
+                    bail!("Wayland clipboard ownership was lost before paste with status {status}");
+                }
+                Err(error) => {
+                    return Err(error).context("failed to inspect the Wayland clipboard owner");
+                }
+            }
+
+            Ok(read_wayland_text().as_deref() == Some(text))
+        },
+    )
+    .with_context(|| {
+        format!(
+            "Wayland clipboard did not publish the transcript within {} ms",
+            WAYLAND_CLIPBOARD_PUBLISH_TIMEOUT.as_millis()
+        )
+    })?;
+    debug!(
+        elapsed_ms = elapsed.as_millis(),
+        "Wayland clipboard publication confirmed"
+    );
+    Ok(())
+}
+
+fn wait_for_confirmed_clipboard_publication(
+    timeout: Duration,
+    poll_delay: Duration,
+    mut probe: impl FnMut() -> Result<bool>,
+) -> Result<Duration> {
+    let started = Instant::now();
+    loop {
+        if probe()? {
+            return Ok(started.elapsed());
+        }
+        if started.elapsed() >= timeout {
+            bail!("clipboard publication was not confirmed before the deadline");
+        }
+        thread::sleep(poll_delay);
+    }
+}
+
 fn publish_wayland_text(text: &str) -> Result<()> {
     let mut child = Command::new("wl-copy")
         .args(["--type", "text/plain;charset=utf-8"])
@@ -254,6 +286,22 @@ fn stop_clipboard_owner(owner: &mut Child) -> Result<()> {
         .wait()
         .context("failed to reap the temporary Wayland clipboard owner")?;
     Ok(())
+}
+
+fn restore_owned_wayland_clipboard(
+    owner: &mut Child,
+    original: Option<String>,
+) -> ClipboardRestoreStatus {
+    match owner.try_wait() {
+        Ok(None) => match stop_clipboard_owner(owner) {
+            Ok(()) => restore_wayland_text(original),
+            Err(error) => ClipboardRestoreStatus::Failed(error.to_string()),
+        },
+        Ok(Some(_)) => ClipboardRestoreStatus::SkippedExternalChange,
+        Err(error) => ClipboardRestoreStatus::Failed(format!(
+            "failed to inspect the Wayland clipboard owner before restore: {error}"
+        )),
+    }
 }
 
 fn restore_wayland_text(original: Option<String>) -> ClipboardRestoreStatus {
@@ -440,4 +488,34 @@ fn emit_paste(device: &mut VirtualDevice) -> Result<()> {
             *KeyEvent::new(KeyCode::KEY_LEFTCTRL, 0),
         ])
         .context("failed to release Ctrl+Shift+V")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn clipboard_publication_waits_for_positive_confirmation() {
+        let mut probes = 0;
+        wait_for_confirmed_clipboard_publication(
+            Duration::from_millis(100),
+            Duration::ZERO,
+            || {
+                probes += 1;
+                Ok(probes == 3)
+            },
+        )
+        .expect("the third probe should confirm publication");
+
+        assert_eq!(probes, 3);
+    }
+
+    #[test]
+    fn clipboard_publication_rejects_an_unconfirmed_owner() {
+        let error =
+            wait_for_confirmed_clipboard_publication(Duration::ZERO, Duration::ZERO, || Ok(false))
+                .expect_err("a running owner alone must not count as publication");
+
+        assert!(error.to_string().contains("publication was not confirmed"));
+    }
 }
