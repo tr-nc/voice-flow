@@ -583,6 +583,13 @@ mod tests {
             preview_content("inserting", "final words", "Inserting"),
             Some(("final words".to_owned(), PreviewStyle::Final)),
         );
+        assert_eq!(
+            preview_content("notice", "", "Inserted · newer clipboard content kept"),
+            Some((
+                "Inserted · newer clipboard content kept".to_owned(),
+                PreviewStyle::Prompt,
+            )),
+        );
         assert_eq!(preview_content("idle", "", "Ready"), None);
         assert_eq!(preview_content("complete", "final words", "Inserted"), None);
     }

@@ -7,6 +7,7 @@ export type PreviewRuntimePhase =
   | "finalizing"
   | "inserting"
   | "complete"
+  | "notice"
   | "error";
 
 export const READY_PROMPT = "Your mic is ready start speaking";
@@ -14,7 +15,15 @@ export const READY_PROMPT = "Your mic is ready start speaking";
 export function toRuntimePreviewFrame(
   phase: PreviewRuntimePhase,
   transcriptFrame: PreviewFrame,
+  message = "",
 ): PreviewFrame {
+  if ((phase === "notice" || phase === "error") && message.trim()) {
+    return {
+      chunks: [{ text: message.trim(), treatment: "settled" }],
+      prompt: true,
+    };
+  }
+
   const hasTranscript = transcriptFrame.chunks.some(({ text }) => text.length > 0);
   if (!hasTranscript && (phase === "connecting" || phase === "listening")) {
     return {

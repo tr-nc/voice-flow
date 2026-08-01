@@ -5,10 +5,14 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 use arboard::Clipboard;
+use objc2_app_kit::NSPasteboard;
 use objc2_application_services::{AXError, AXUIElement, AXValue, AXValueType};
 use objc2_core_foundation::{CFRetained, CFString, CFType, CGPoint, CGSize, ConcreteType};
 
-use super::TextInjector;
+use super::{ClipboardRestoreStatus, InsertionReport, TextInjector};
+
+const CLIPBOARD_SETTLE_DELAY: Duration = Duration::from_millis(70);
+const CLIPBOARD_RESTORE_DELAY: Duration = Duration::from_millis(120);
 
 pub struct MacOsTextInjector;
 
@@ -71,34 +75,78 @@ fn copy_attribute<T: ConcreteType>(
 }
 
 impl TextInjector for MacOsTextInjector {
-    fn insert_at_active_cursor(&self, text: &str) -> Result<()> {
-        let mut clipboard = Clipboard::new().context("failed to open the macOS clipboard")?;
-        clipboard
-            .set_text(text.to_owned())
-            .context("failed to copy the transcript")?;
+    fn insert_at_active_cursor(&self, text: &str) -> InsertionReport {
+        let mut clipboard = match Clipboard::new() {
+            Ok(clipboard) => clipboard,
+            Err(error) => {
+                return InsertionReport::failed_before_publish(format!(
+                    "failed to open the macOS clipboard: {error}"
+                ));
+            }
+        };
+        // TODO: Preserve every pasteboard item and type instead of only the
+        // plain-text representation.
+        let original = clipboard.get_text().ok();
+        if let Err(error) = clipboard.set_text(text.to_owned()) {
+            return InsertionReport::failed_before_publish(format!(
+                "failed to publish the transcript to the macOS clipboard: {error}"
+            ));
+        }
+        let pasteboard = NSPasteboard::generalPasteboard();
+        let temporary_change_count = pasteboard.changeCount();
 
         // The transcript overlay is non-focusable, so the user's target application
         // remains frontmost. A short delay gives the pasteboard time to publish.
-        thread::sleep(Duration::from_millis(70));
-        let output = Command::new("osascript")
-            .args([
-                "-e",
-                "tell application \"System Events\" to keystroke \"v\" using command down",
-            ])
-            .output()
-            .context("failed to run the macOS paste command")?;
+        thread::sleep(CLIPBOARD_SETTLE_DELAY);
+        let insertion_error = emit_paste().err().map(|error| error.to_string());
+        thread::sleep(CLIPBOARD_RESTORE_DELAY);
 
-        if !output.status.success() {
-            let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-            bail!(
-                "the transcript was copied, but macOS blocked automatic paste{}",
-                if detail.is_empty() {
-                    String::new()
-                } else {
-                    format!(": {detail}")
-                }
-            );
+        let restore = if pasteboard.changeCount() != temporary_change_count {
+            ClipboardRestoreStatus::SkippedExternalChange
+        } else {
+            restore_clipboard_text(&mut clipboard, original)
+        };
+        InsertionReport {
+            insertion_error,
+            clipboard_restore: Some(restore),
         }
-        Ok(())
+    }
+}
+
+fn emit_paste() -> Result<()> {
+    let output = Command::new("osascript")
+        .args([
+            "-e",
+            "tell application \"System Events\" to keystroke \"v\" using command down",
+        ])
+        .output()
+        .context("failed to run the macOS paste command")?;
+
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+        bail!(
+            "macOS blocked automatic paste{}",
+            if detail.is_empty() {
+                String::new()
+            } else {
+                format!(": {detail}")
+            }
+        );
+    }
+    Ok(())
+}
+
+fn restore_clipboard_text(
+    clipboard: &mut Clipboard,
+    original: Option<String>,
+) -> ClipboardRestoreStatus {
+    let (result, restored) = match original {
+        Some(original) => (clipboard.set_text(original), true),
+        None => (clipboard.clear(), false),
+    };
+    match result {
+        Ok(()) if restored => ClipboardRestoreStatus::Restored,
+        Ok(()) => ClipboardRestoreStatus::OriginalUnavailable,
+        Err(error) => ClipboardRestoreStatus::Failed(error.to_string()),
     }
 }

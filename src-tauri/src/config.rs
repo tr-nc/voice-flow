@@ -27,7 +27,6 @@ pub struct AppConfig {
     pub shortcut: String,
     pub interaction_mode: InteractionMode,
     pub microphone: String,
-    pub auto_insert: bool,
 }
 
 impl Default for AppConfig {
@@ -37,7 +36,6 @@ impl Default for AppConfig {
             shortcut: DEFAULT_SHORTCUT.to_owned(),
             interaction_mode: InteractionMode::Hold,
             microphone: String::new(),
-            auto_insert: true,
         }
     }
 }
@@ -85,7 +83,7 @@ pub fn load(app: &AppHandle) -> Result<AppConfig> {
         .with_context(|| format!("failed to read settings from {}", path.display()))?;
     let value: serde_json::Value = serde_json::from_str(&contents)
         .with_context(|| format!("failed to parse settings from {}", path.display()))?;
-    let needs_migration = ["app_id", "endpoint", "resource_id", "polish"]
+    let needs_migration = ["app_id", "endpoint", "resource_id", "polish", "auto_insert"]
         .iter()
         .any(|field| value.get(field).is_some());
     let config: AppConfig = serde_json::from_value(value)
@@ -146,7 +144,6 @@ mod tests {
             shortcut: "RCommand".to_owned(),
             interaction_mode: InteractionMode::Toggle,
             microphone: "External microphone".to_owned(),
-            auto_insert: false,
         };
 
         let encoded = serde_json::to_vec(&expected).unwrap();
@@ -172,5 +169,6 @@ mod tests {
         assert!(current.get("app_id").is_none());
         assert!(current.get("endpoint").is_none());
         assert!(current.get("resource_id").is_none());
+        assert!(current.get("auto_insert").is_none());
     }
 }

@@ -1,6 +1,6 @@
 use std::io::Write;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::sync::{Mutex, MutexGuard};
 use std::thread;
 use std::time::Duration;
@@ -9,11 +9,14 @@ use anyhow::{Context, Result, bail};
 use arboard::Clipboard;
 use evdev::{AttributeSet, KeyCode, KeyEvent, uinput::VirtualDevice};
 use gtk::prelude::*;
-use tracing::{debug, info, warn};
+use tracing::{info, warn};
 
-use super::{TextInjector, linux_overlay, linux_shell_overlay};
+use super::{
+    ClipboardRestoreStatus, InsertionReport, TextInjector, linux_overlay, linux_shell_overlay,
+};
 
 const CLIPBOARD_SETTLE_DELAY: Duration = Duration::from_millis(70);
+const CLIPBOARD_RESTORE_DELAY: Duration = Duration::from_millis(120);
 const VIRTUAL_DEVICE_SETTLE_DELAY: Duration = Duration::from_millis(120);
 const KEYSTROKE_DELAY: Duration = Duration::from_millis(18);
 // systemd's input_id classifies an event device as a keyboard only when it
@@ -80,30 +83,12 @@ pub fn prepare_runtime() -> Option<&'static str> {
 }
 
 impl TextInjector for LinuxTextInjector {
-    fn insert_at_active_cursor(&self, text: &str) -> Result<()> {
-        copy_to_clipboard(text)?;
-        thread::sleep(CLIPBOARD_SETTLE_DELAY);
-
-        let mut paste_device = paste_device()?;
-        let result = emit_paste(
-            paste_device
-                .as_mut()
-                .expect("paste device must be initialized"),
-        );
-        if result.is_err() {
-            // Destroying the virtual device also releases keys if an I/O error
-            // happened between the press and release event batches.
-            *paste_device = None;
+    fn insert_at_active_cursor(&self, text: &str) -> InsertionReport {
+        if is_wayland_session() {
+            insert_with_wayland_clipboard(text)
+        } else {
+            insert_with_x11_clipboard(text)
         }
-        result.context("the transcript was copied, but Linux blocked automatic paste")
-    }
-}
-
-pub fn copy_to_clipboard(text: &str) -> Result<()> {
-    if is_wayland_session() {
-        copy_with_wl_copy(text)
-    } else {
-        copy_with_arboard(text)
     }
 }
 
@@ -112,13 +97,103 @@ fn is_wayland_session() -> bool {
         || std::env::var_os("WAYLAND_DISPLAY").is_some()
 }
 
-fn copy_with_wl_copy(text: &str) -> Result<()> {
+fn insert_with_wayland_clipboard(text: &str) -> InsertionReport {
+    // TODO: Preserve every advertised MIME type instead of only the plain-text
+    // representation when the product expands beyond the first implementation.
+    let original = read_wayland_text();
+    let mut owner = match publish_wayland_text_foreground(text) {
+        Ok(owner) => owner,
+        Err(error) => return InsertionReport::failed_before_publish(error.to_string()),
+    };
+    thread::sleep(CLIPBOARD_SETTLE_DELAY);
+    match owner.try_wait() {
+        Ok(None) => {}
+        Ok(Some(status)) => {
+            return InsertionReport {
+                insertion_error: Some(format!(
+                    "Wayland clipboard ownership was lost before paste with status {status}"
+                )),
+                clipboard_restore: Some(ClipboardRestoreStatus::SkippedExternalChange),
+            };
+        }
+        Err(error) => {
+            return InsertionReport {
+                insertion_error: Some(format!(
+                    "failed to inspect the Wayland clipboard owner: {error}"
+                )),
+                clipboard_restore: Some(ClipboardRestoreStatus::Failed(
+                    "could not safely determine clipboard ownership".to_owned(),
+                )),
+            };
+        }
+    }
+
+    let insertion_error = emit_virtual_paste().err().map(|error| error.to_string());
+    thread::sleep(CLIPBOARD_RESTORE_DELAY);
+    let restore = match owner.try_wait() {
+        Ok(None) => match stop_clipboard_owner(&mut owner) {
+            Ok(()) => restore_wayland_text(original),
+            Err(error) => ClipboardRestoreStatus::Failed(error.to_string()),
+        },
+        Ok(Some(_)) => ClipboardRestoreStatus::SkippedExternalChange,
+        Err(error) => ClipboardRestoreStatus::Failed(format!(
+            "failed to inspect the Wayland clipboard owner before restore: {error}"
+        )),
+    };
+    InsertionReport {
+        insertion_error,
+        clipboard_restore: Some(restore),
+    }
+}
+
+fn insert_with_x11_clipboard(text: &str) -> InsertionReport {
+    let mut clipboard = match Clipboard::new() {
+        Ok(clipboard) => clipboard,
+        Err(error) => {
+            return InsertionReport::failed_before_publish(format!(
+                "failed to open the X11 clipboard: {error}"
+            ));
+        }
+    };
+    // TODO: Preserve every advertised clipboard target instead of only text.
+    let original = clipboard.get_text().ok();
+    if let Err(error) = clipboard.set_text(text.to_owned()) {
+        return InsertionReport::failed_before_publish(format!(
+            "failed to publish the transcript to the X11 clipboard: {error}"
+        ));
+    }
+    thread::sleep(CLIPBOARD_SETTLE_DELAY);
+    let insertion_error = emit_virtual_paste().err().map(|error| error.to_string());
+    thread::sleep(CLIPBOARD_RESTORE_DELAY);
+
+    let restore = match clipboard.get_text() {
+        Ok(current) if current == text => restore_arboard_text(&mut clipboard, original),
+        Ok(_) | Err(_) => ClipboardRestoreStatus::SkippedExternalChange,
+    };
+    InsertionReport {
+        insertion_error,
+        clipboard_restore: Some(restore),
+    }
+}
+
+fn read_wayland_text() -> Option<String> {
+    let output = Command::new("wl-paste")
+        .arg("--no-newline")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    String::from_utf8(output.stdout).ok()
+}
+
+fn publish_wayland_text_foreground(text: &str) -> Result<Child> {
     let mut child = Command::new("wl-copy")
-        .args(["--type", "text/plain;charset=utf-8"])
+        .args(["--foreground", "--type", "text/plain;charset=utf-8"])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
-        // wl-copy forks a background clipboard owner. Inheriting a captured
-        // stderr pipe would keep wait_with_output blocked on that owner.
         .stderr(Stdio::null())
         .spawn()
         .context("failed to start wl-copy; install the wl-clipboard package")?;
@@ -129,27 +204,89 @@ fn copy_with_wl_copy(text: &str) -> Result<()> {
         .context("failed to open wl-copy stdin")?
         .write_all(text.as_bytes())
         .context("failed to send the transcript to wl-copy")?;
+    Ok(child)
+}
 
+fn publish_wayland_text(text: &str) -> Result<()> {
+    let mut child = Command::new("wl-copy")
+        .args(["--type", "text/plain;charset=utf-8"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        // The normal restore path lets wl-copy fork a persistent owner. Never
+        // capture stderr here because the background owner inherits that pipe.
+        .stderr(Stdio::null())
+        .spawn()
+        .context("failed to start wl-copy while restoring the clipboard")?;
+    child
+        .stdin
+        .take()
+        .context("failed to open wl-copy stdin while restoring the clipboard")?
+        .write_all(text.as_bytes())
+        .context("failed to restore the original text to wl-copy")?;
     let status = child.wait().context("failed to wait for wl-copy")?;
     if !status.success() {
-        bail!("wl-copy failed to publish the transcript with status {status}");
+        bail!("wl-copy failed to restore the clipboard with status {status}");
     }
-
-    debug!(provider = "wl-copy", "Linux clipboard updated");
     Ok(())
 }
 
-fn copy_with_arboard(text: &str) -> Result<()> {
-    let mut clipboard = Clipboard::new().context("failed to open the Linux clipboard")?;
-    clipboard
-        .set_text(text.to_owned())
-        .context("failed to copy the transcript")?;
-    debug!(provider = "arboard", "Linux clipboard updated");
+fn clear_wayland_clipboard() -> Result<()> {
+    let status = Command::new("wl-copy")
+        .arg("--clear")
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .context("failed to clear the temporary Wayland clipboard")?;
+    if !status.success() {
+        bail!("wl-copy failed to clear the clipboard with status {status}");
+    }
     Ok(())
+}
+
+fn stop_clipboard_owner(owner: &mut Child) -> Result<()> {
+    if owner.try_wait()?.is_none() {
+        owner
+            .kill()
+            .context("failed to stop the temporary Wayland clipboard owner")?;
+    }
+    owner
+        .wait()
+        .context("failed to reap the temporary Wayland clipboard owner")?;
+    Ok(())
+}
+
+fn restore_wayland_text(original: Option<String>) -> ClipboardRestoreStatus {
+    let (result, restored) = match original {
+        Some(original) => (publish_wayland_text(&original), true),
+        None => (clear_wayland_clipboard(), false),
+    };
+    match result {
+        Ok(()) if restored => ClipboardRestoreStatus::Restored,
+        Ok(()) => ClipboardRestoreStatus::OriginalUnavailable,
+        Err(error) => ClipboardRestoreStatus::Failed(error.to_string()),
+    }
+}
+
+fn restore_arboard_text(
+    clipboard: &mut Clipboard,
+    original: Option<String>,
+) -> ClipboardRestoreStatus {
+    let (result, restored) = match original {
+        Some(original) => (clipboard.set_text(original), true),
+        None => (clipboard.clear(), false),
+    };
+    match result {
+        Ok(()) if restored => ClipboardRestoreStatus::Restored,
+        Ok(()) => ClipboardRestoreStatus::OriginalUnavailable,
+        Err(error) => ClipboardRestoreStatus::Failed(error.to_string()),
+    }
 }
 
 pub fn initialize() -> Result<()> {
-    drop(paste_device()?);
+    if let Err(error) = paste_device() {
+        warn!(%error, "Linux clipboard insertion is unavailable");
+    }
     let shell_overlay_available = linux_shell_overlay::initialize()?;
     if let Err(error) = linux_overlay::initialize() {
         if !shell_overlay_available {
@@ -270,6 +407,21 @@ fn paste_device() -> Result<MutexGuard<'static, Option<VirtualDevice>>> {
         info!("Linux virtual paste keyboard initialized");
     }
     Ok(device)
+}
+
+fn emit_virtual_paste() -> Result<()> {
+    let mut paste_device = paste_device()?;
+    let result = emit_paste(
+        paste_device
+            .as_mut()
+            .expect("paste device must be initialized"),
+    );
+    if result.is_err() {
+        // Destroying the virtual device also releases keys if an I/O error
+        // happened between the press and release event batches.
+        *paste_device = None;
+    }
+    result.context("Linux blocked automatic paste")
 }
 
 fn emit_paste(device: &mut VirtualDevice) -> Result<()> {

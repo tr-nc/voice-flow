@@ -1,6 +1,6 @@
 use std::any::Any;
 use std::panic::AssertUnwindSafe;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -20,6 +20,7 @@ use crate::shortcut::ShortcutBinding;
 
 const RUNTIME_EVENT: &str = "voice-flow://runtime";
 const COMPLETION_STATUS_DURATION: Duration = Duration::from_millis(150);
+const INSERTION_NOTICE_DURATION: Duration = Duration::from_millis(1800);
 const FINAL_PREVIEW_DURATION: Duration = Duration::from_millis(500);
 const DICTATION_MIN_HEIGHT: u32 = 94;
 const DICTATION_MAX_HEIGHT: u32 = 280;
@@ -32,6 +33,7 @@ pub struct AppState {
     session: Mutex<Option<ActiveSession>>,
     runtime: Mutex<RuntimeSnapshot>,
     shortcut_down: AtomicBool,
+    runtime_revision: AtomicU64,
 }
 
 impl Default for AppState {
@@ -45,6 +47,7 @@ impl Default for AppState {
             session: Mutex::new(None),
             runtime: Mutex::new(RuntimeSnapshot::idle()),
             shortcut_down: AtomicBool::new(false),
+            runtime_revision: AtomicU64::new(0),
         }
     }
 }
@@ -137,7 +140,6 @@ pub fn begin(app: &AppHandle) -> Result<(), String> {
     info!(
         mode = ?config.interaction_mode,
         microphone = if config.microphone.is_empty() { "system-default" } else { &config.microphone },
-        auto_insert = config.auto_insert,
         "dictation session starting"
     );
 
@@ -326,11 +328,7 @@ async fn run_session(
                     phase: "inserting".to_owned(),
                     transcript: text.clone(),
                     segments: final_segments(&text),
-                    message: if config.auto_insert {
-                        "Inserting at the active cursor…".to_owned()
-                    } else {
-                        "Copying the transcript…".to_owned()
-                    },
+                    message: "Inserting at the active cursor…".to_owned(),
                 },
             );
 
@@ -342,10 +340,10 @@ async fn run_session(
             hide_dictation_window(&app);
 
             #[cfg(target_os = "linux")]
-            if config.auto_insert {
+            {
                 // GNOME Wayland may focus a newly shown overlay even after it
                 // was marked non-focusable. Give the compositor time to return
-                // focus to the user's target field before injecting paste.
+                // focus before publishing the clipboard and emitting paste.
                 debug!(
                     delay_ms = LINUX_FOCUS_RETURN_DELAY.as_millis(),
                     "waiting for Linux focus return before cursor insertion"
@@ -354,49 +352,68 @@ async fn run_session(
             }
 
             let insert_text = text.clone();
-            let auto_insert = config.auto_insert;
             let insertion = tauri::async_runtime::spawn_blocking(move || {
-                if auto_insert {
-                    platform::insert_at_active_cursor(&insert_text)
-                } else {
-                    platform::copy_to_clipboard(&insert_text)
-                }
+                platform::insert_at_active_cursor(&insert_text)
             })
             .await;
 
-            let (message, insertion_status, insertion_error) = match insertion {
-                Ok(Ok(())) if config.auto_insert => {
-                    info!("transcript inserted at active cursor");
-                    ("Inserted at the active cursor".to_owned(), "inserted", None)
-                }
-                Ok(Ok(())) => {
-                    info!("transcript copied to clipboard");
-                    ("Copied to the clipboard".to_owned(), "copied", None)
-                }
-                Ok(Err(error)) => {
-                    warn!(%error, "transcript insertion failed after ASR completed");
-                    let detail = error.to_string();
-                    (detail.clone(), "failed", Some(detail))
+            match insertion {
+                Ok(report) => {
+                    let restore = report
+                        .clipboard_restore()
+                        .map(|restore| restore.as_str())
+                        .unwrap_or("not_used");
+                    if let Some(error) = report
+                        .clipboard_restore()
+                        .and_then(|restore| restore.error())
+                    {
+                        warn!(%error, "clipboard insertion could not restore the original text");
+                    }
+
+                    let insertion_error = report.insertion_error().map(str::to_owned);
+                    if report.succeeded() {
+                        info!(
+                            method = "clipboard",
+                            clipboard_restore = restore,
+                            "transcript inserted at active cursor"
+                        );
+                    } else if let Some(error) = report.insertion_error() {
+                        warn!(method = "clipboard", clipboard_restore = restore, %error, "transcript insertion failed after ASR completed");
+                    }
+                    if let Some(diagnostics) = &diagnostics {
+                        let diagnostic_error = insertion_error.as_deref().or_else(|| {
+                            report
+                                .clipboard_restore()
+                                .and_then(|restore| restore.error())
+                        });
+                        diagnostics.complete(report.insertion_status(), diagnostic_error);
+                    }
+
+                    if let Some(message) = report.notice() {
+                        let notice_revision = show_insertion_notice(
+                            &app,
+                            if report.succeeded() {
+                                "notice"
+                            } else {
+                                "error"
+                            },
+                            message,
+                        );
+                        finish_notice_after(&app, INSERTION_NOTICE_DURATION, notice_revision).await;
+                    } else {
+                        finish_session_after(&app, Duration::ZERO).await;
+                    }
                 }
                 Err(error) => {
                     error!(%error, "text insertion worker failed");
-                    let detail = format!("text insertion task failed: {error}");
-                    (detail.clone(), "failed", Some(detail))
+                    let detail = format!("Text insertion task failed: {error}");
+                    if let Some(diagnostics) = &diagnostics {
+                        diagnostics.complete("failed_worker", Some(&detail));
+                    }
+                    let notice_revision = show_insertion_notice(&app, "error", &detail);
+                    finish_notice_after(&app, INSERTION_NOTICE_DURATION, notice_revision).await;
                 }
-            };
-            if let Some(diagnostics) = &diagnostics {
-                diagnostics.complete(insertion_status, insertion_error.as_deref());
             }
-            publish_runtime(
-                &app,
-                RuntimeSnapshot {
-                    phase: "complete".to_owned(),
-                    segments: final_segments(&text),
-                    transcript: text,
-                    message,
-                },
-            );
-            finish_session_after(&app, COMPLETION_STATUS_DURATION).await;
         }
         Ok(_) => {
             if let Some(diagnostics) = &diagnostics {
@@ -498,10 +515,49 @@ async fn finish_session_after(app: &AppHandle, delay: Duration) {
     publish_runtime(app, RuntimeSnapshot::idle());
 }
 
-fn publish_runtime(app: &AppHandle, snapshot: RuntimeSnapshot) {
+fn show_insertion_notice(app: &AppHandle, phase: &str, message: &str) -> u64 {
+    if let Err(error) = show_dictation_window(app) {
+        warn!(%error, "failed to show the cursor insertion notice");
+    }
+    publish_runtime(
+        app,
+        RuntimeSnapshot {
+            phase: phase.to_owned(),
+            transcript: String::new(),
+            segments: Vec::new(),
+            message: message.to_owned(),
+        },
+    )
+}
+
+async fn finish_notice_after(app: &AppHandle, delay: Duration, notice_revision: u64) {
+    // An insertion notice must not block the next dictation. Any newer
+    // runtime update supersedes this cleanup, so an old timer cannot hide a
+    // later notice, preview, or error.
+    *lock(&app.state::<AppState>().session) = None;
+    tokio::time::sleep(delay).await;
+    let state = app.state::<AppState>();
+    if state.is_active() || state.runtime_revision.load(Ordering::Acquire) != notice_revision {
+        return;
+    }
+    let phase = state.runtime_snapshot().phase;
+    if phase == "notice" || phase == "error" {
+        debug!("cursor insertion notice returned to idle");
+        hide_dictation_window(app);
+        publish_runtime(app, RuntimeSnapshot::idle());
+    }
+}
+
+fn publish_runtime(app: &AppHandle, snapshot: RuntimeSnapshot) -> u64 {
+    let state = app.state::<AppState>();
+    let revision = state
+        .runtime_revision
+        .fetch_add(1, Ordering::AcqRel)
+        .wrapping_add(1);
     platform::publish_dictation_preview(&snapshot.phase, &snapshot.transcript, &snapshot.message);
-    *lock(&app.state::<AppState>().runtime) = snapshot.clone();
+    *lock(&state.runtime) = snapshot.clone();
     let _ = app.emit(RUNTIME_EVENT, snapshot);
+    revision
 }
 
 fn final_segments(text: &str) -> Vec<TranscriptSegment> {

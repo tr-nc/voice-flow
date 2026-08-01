@@ -13,7 +13,7 @@ The interface uses a quiet, warm, writing-focused visual system rather than a hi
 - Manual microphone selection, with a system-default option.
 - Live, click-through transcript-only overlay with no controls or decorative chrome.
 - Raw streaming ASR output with VolcEngine punctuation and inverse-text normalization; no LLM polish in the MVP.
-- Automatic clipboard + paste insertion when dictation ends.
+- Automatic active-cursor insertion when dictation ends, with no copy-only mode.
 - Credentials stored locally in the Tauri app config directory, never in this repository.
 
 ## Run
@@ -55,7 +55,7 @@ npm install
 npm run tauri dev
 ```
 
-The Linux default shortcut is right Control. Automatic insertion uses `wl-copy` plus a virtual `Ctrl+Shift+V` on Wayland, and the X11 clipboard plus the same virtual shortcut on X11. Voice Flow uses this one paste chord for every Linux application without application-specific handling. Enter the Secret Key again on a new computer; local settings are intentionally not synchronized.
+The Linux default shortcut is right Control. Voice Flow temporarily publishes the transcript with `wl-copy` on Wayland or the X11 clipboard, emits virtual `Ctrl+Shift+V`, and restores the previous plain-text clipboard when it still owns the temporary value. If another application changes the clipboard during insertion, Voice Flow keeps the newer content instead of restoring over it. Normal insertion and restoration are silent; exceptional clipboard outcomes are reported in the floating overlay. Enter the Secret Key again on a new computer; local settings are intentionally not synchronized.
 
 ## Local install
 
@@ -83,7 +83,7 @@ On macOS, launch the installed application once and grant **Microphone** and **A
 
 ## Credentials and settings
 
-Enter the VolcEngine **Secret Key** once. It is stored only in the local settings file. The Secret Key, selected microphone, shortcut, interaction mode, and insertion preference are saved automatically whenever they change.
+Enter the VolcEngine **Secret Key** once. It is stored only in the local settings file. The Secret Key, selected microphone, shortcut, and interaction mode are saved automatically whenever they change. Finished dictation is always inserted at the active cursor; Voice Flow does not provide a copy-only mode.
 
 Voice Flow uses the optimized bidirectional ASR endpoint `wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async`, enables ASR second-pass recognition with a benchmarked 400 ms VAD end window for accurate, responsive stable text, and uses resource ID `volc.seedasr.sauc.duration`.
 
@@ -95,11 +95,11 @@ Voice Flow uses the optimized bidirectional ASR endpoint `wss://openspeech.byted
 - `src-tauri/src/diagnostics.rs`: self-contained recent-session audio and recognition metadata.
 - `src-tauri/src/shortcut.rs`: arbitrary key/chord polling with left/right modifier distinction.
 - `src-tauri/src/logging.rs`: identical stdout and fixed-file tracing output.
-- `src-tauri/src/platform/`: active-cursor insertion boundary; macOS uses System Events and Linux uses `uinput`.
+- `src-tauri/src/platform/`: guarded clipboard insertion boundary; macOS uses NSPasteboard plus System Events, while Linux uses `wl-copy` or X11 plus `uinput`.
 - `src-tauri/src/config.rs`: local settings and validation.
 - `src/`: framework-free TypeScript UI for the settings window and transcript-only overlay.
 
-Provider endpoint/resource policy is owned by the backend. User choices such as microphone, interaction mode, shortcut, and insertion behavior live in the automatically persisted settings model.
+Provider endpoint/resource policy is owned by the backend. User choices such as microphone, interaction mode, and shortcut live in the automatically persisted settings model.
 
 Runtime logs are written to stdout and one platform-local file with identical content:
 

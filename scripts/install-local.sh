@@ -45,7 +45,7 @@ case "$(uname -s)" in
 
     printf '\nInstalled Voice Flow at:\n  %s\n' "$installed_app"
     printf 'Launch it with:\n  open "%s"\n' "$installed_app"
-    printf '\nmacOS permission setup (required for shortcuts and automatic paste):\n'
+    printf '\nmacOS permission setup (required for shortcuts and cursor insertion):\n'
     printf '  1. In System Settings, open Privacy & Security > Accessibility.\n'
     printf '  2. Click +, select "%s", and turn Voice Flow on.\n' "$installed_app"
     printf '  3. If Voice Flow is already enabled but the shortcut does not work, remove it with -, add it again, and turn it on.\n'

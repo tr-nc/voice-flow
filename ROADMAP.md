@@ -16,11 +16,16 @@
 - [ ] macOS menu bar lifecycle and onboarding for permissions
 - [ ] reconnect and recover short network interruptions
 - [ ] credential storage in the macOS Keychain
+- [ ] preserve rich text, images, files, and private clipboard formats during insertion
 - [ ] signed and notarized macOS releases
 
 ## Linux
 
-- [ ] Wayland and X11 cursor insertion implementations
+- [x] Wayland and X11 cursor insertion implementations
 - [ ] package and test PipeWire/PulseAudio microphone behavior
 - [ ] validate global shortcuts across major desktop environments
 - [ ] package AppImage and distribution-specific artifacts
+
+## Future platforms
+
+- [ ] Windows cursor insertion and clipboard preservation

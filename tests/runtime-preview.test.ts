@@ -26,3 +26,21 @@ test("the final preview uses the exact canonical text sent for insertion", () =>
   assert.equal(frame.final, true);
   assert.equal(frame.prompt, undefined);
 });
+
+test("clipboard insertion notices replace the hidden final transcript", () => {
+  const frame = toRuntimePreviewFrame(
+    "notice",
+    { chunks: [{ text: "sensitive transcript", treatment: "settled" }] },
+    "Inserted · newer clipboard content kept",
+  );
+
+  assert.deepEqual(frame, {
+    chunks: [
+      {
+        text: "Inserted · newer clipboard content kept",
+        treatment: "settled",
+      },
+    ],
+    prompt: true,
+  });
+});

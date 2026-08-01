@@ -15,7 +15,6 @@ type AppConfig = {
   shortcut: string;
   interaction_mode: InteractionMode;
   microphone: string;
-  auto_insert: boolean;
 };
 
 type Microphone = {
@@ -121,14 +120,10 @@ async function mountSettings(root: HTMLDivElement) {
               <div class="behavior-copy">
                 <span class="cursor-symbol" aria-hidden="true"></span>
                 <div>
-                  <strong>结束后插入光标</strong>
-                  <p>不抢焦点，松开快捷键后自动粘贴到当前应用。</p>
+                  <strong>自动插入当前光标</strong>
+                  <p>识别完成后直接输入当前应用；不提供仅复制模式。</p>
                 </div>
               </div>
-              <label class="switch">
-                <input id="auto-insert" type="checkbox" checked />
-                <span></span>
-              </label>
             </div>
           </section>
 
@@ -141,7 +136,6 @@ async function mountSettings(root: HTMLDivElement) {
   const microphoneNote = element<HTMLElement>("#microphone-note");
   const shortcutCapture = element<HTMLButtonElement>("#shortcut-capture");
   const shortcutValue = element<HTMLElement>("#shortcut-value");
-  const autoInsert = element<HTMLInputElement>("#auto-insert");
 
   let config: AppConfig;
   let runtime: RuntimeSnapshot;
@@ -195,7 +189,6 @@ async function mountSettings(root: HTMLDivElement) {
     updateMicrophoneNote();
     scheduleConfigSave();
   });
-  autoInsert.addEventListener("change", () => scheduleConfigSave());
 
   shortcutCapture.addEventListener("click", () => {
     if (capturingShortcut) {
@@ -236,7 +229,6 @@ async function mountSettings(root: HTMLDivElement) {
     microphone.value = next.microphone;
     updateMicrophoneNote();
     shortcutValue.textContent = prettyShortcut(next.shortcut);
-    autoInsert.checked = next.auto_insert;
     const selectedMode = document.querySelector<HTMLInputElement>(`input[name="mode"][value="${next.interaction_mode}"]`);
     if (selectedMode) selectedMode.checked = true;
     updateModeCards();
@@ -253,7 +245,6 @@ async function mountSettings(root: HTMLDivElement) {
       shortcut: config.shortcut,
       interaction_mode: interactionMode ?? "hold",
       microphone: microphone.value,
-      auto_insert: autoInsert.checked,
     };
   }
 
@@ -387,7 +378,11 @@ async function mountDictationOverlay(root: HTMLDivElement) {
 
   const applyRuntime = (next: RuntimeSnapshot) => {
     previewFrames.submit(
-      toRuntimePreviewFrame(next.phase, toPreviewFrame(next.transcript, next.segments ?? [])),
+      toRuntimePreviewFrame(
+        next.phase,
+        toPreviewFrame(next.transcript, next.segments ?? []),
+        next.message,
+      ),
     );
   };
 

@@ -1,12 +1,107 @@
-#[cfg(not(target_os = "linux"))]
-use anyhow::Context;
 use anyhow::Result;
-#[cfg(not(target_os = "linux"))]
-use arboard::Clipboard;
 use tauri::{PhysicalPosition, PhysicalSize};
 
 pub trait TextInjector {
-    fn insert_at_active_cursor(&self, text: &str) -> Result<()>;
+    fn insert_at_active_cursor(&self, text: &str) -> InsertionReport;
+}
+
+#[derive(Debug)]
+pub enum ClipboardRestoreStatus {
+    Restored,
+    OriginalUnavailable,
+    SkippedExternalChange,
+    Failed(String),
+}
+
+impl ClipboardRestoreStatus {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Restored => "restored",
+            Self::OriginalUnavailable => "original_unavailable",
+            Self::SkippedExternalChange => "skipped_external_change",
+            Self::Failed(_) => "failed",
+        }
+    }
+
+    pub fn error(&self) -> Option<&str> {
+        match self {
+            Self::Failed(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct InsertionReport {
+    pub insertion_error: Option<String>,
+    pub clipboard_restore: Option<ClipboardRestoreStatus>,
+}
+
+impl InsertionReport {
+    pub fn failed_before_publish(error: impl Into<String>) -> Self {
+        Self {
+            insertion_error: Some(error.into()),
+            clipboard_restore: None,
+        }
+    }
+
+    pub fn insertion_error(&self) -> Option<&str> {
+        self.insertion_error.as_deref()
+    }
+
+    pub fn clipboard_restore(&self) -> Option<&ClipboardRestoreStatus> {
+        self.clipboard_restore.as_ref()
+    }
+
+    pub fn succeeded(&self) -> bool {
+        self.insertion_error.is_none()
+    }
+
+    pub fn insertion_status(&self) -> &'static str {
+        match (self.succeeded(), &self.clipboard_restore) {
+            (false, _) => "failed_clipboard",
+            (true, Some(ClipboardRestoreStatus::Restored)) => "inserted_clipboard_restored",
+            (true, Some(ClipboardRestoreStatus::OriginalUnavailable)) => {
+                "inserted_clipboard_original_unavailable"
+            }
+            (true, Some(ClipboardRestoreStatus::SkippedExternalChange)) => {
+                "inserted_clipboard_external_change"
+            }
+            (true, Some(ClipboardRestoreStatus::Failed(_))) => "inserted_clipboard_restore_failed",
+            (true, None) => "inserted_clipboard_restore_not_attempted",
+        }
+    }
+
+    pub fn notice(&self) -> Option<&'static str> {
+        if !self.succeeded() {
+            return Some(match &self.clipboard_restore {
+                Some(ClipboardRestoreStatus::Restored) => {
+                    "Insertion failed · plain-text clipboard restored"
+                }
+                Some(ClipboardRestoreStatus::SkippedExternalChange) => {
+                    "Insertion failed · newer clipboard content kept"
+                }
+                Some(ClipboardRestoreStatus::OriginalUnavailable) => {
+                    "Insertion failed · non-text clipboard not restored"
+                }
+                Some(ClipboardRestoreStatus::Failed(_)) => {
+                    "Insertion failed · clipboard restore also failed"
+                }
+                None => "Insertion failed",
+            });
+        }
+        match &self.clipboard_restore {
+            Some(ClipboardRestoreStatus::Restored) => None,
+            Some(ClipboardRestoreStatus::OriginalUnavailable) => {
+                Some("Inserted · non-text clipboard not restored")
+            }
+            Some(ClipboardRestoreStatus::SkippedExternalChange) => {
+                Some("Inserted · newer clipboard content kept")
+            }
+            Some(ClipboardRestoreStatus::Failed(_)) => Some("Inserted · clipboard restore failed"),
+            None => Some("Inserted · clipboard restore was not attempted"),
+        }
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -86,7 +181,7 @@ pub fn run_overlay_helper() -> Result<()> {
     linux_overlay::run_helper()
 }
 
-pub fn insert_at_active_cursor(text: &str) -> Result<()> {
+pub fn insert_at_active_cursor(text: &str) -> InsertionReport {
     CurrentTextInjector.insert_at_active_cursor(text)
 }
 
@@ -111,21 +206,32 @@ pub fn dictation_overlay_position(
     PhysicalPosition::new(x, y)
 }
 
-pub fn copy_to_clipboard(text: &str) -> Result<()> {
-    #[cfg(target_os = "linux")]
-    return linux::copy_to_clipboard(text);
-    #[cfg(not(target_os = "linux"))]
-    {
-        let mut clipboard = Clipboard::new().context("failed to open the clipboard")?;
-        clipboard
-            .set_text(text.to_owned())
-            .context("failed to copy the transcript")
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn insertion_reports_explain_clipboard_restore_outcomes() {
+        let restored = InsertionReport {
+            insertion_error: None,
+            clipboard_restore: Some(ClipboardRestoreStatus::Restored),
+        };
+        assert_eq!(restored.insertion_status(), "inserted_clipboard_restored");
+        assert_eq!(restored.notice(), None);
+
+        let changed = InsertionReport {
+            insertion_error: None,
+            clipboard_restore: Some(ClipboardRestoreStatus::SkippedExternalChange),
+        };
+        assert_eq!(
+            changed.insertion_status(),
+            "inserted_clipboard_external_change"
+        );
+        assert_eq!(
+            changed.notice(),
+            Some("Inserted · newer clipboard content kept")
+        );
+    }
 
     #[cfg(target_os = "macos")]
     #[test]

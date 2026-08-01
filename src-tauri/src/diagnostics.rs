@@ -63,7 +63,6 @@ struct SessionRecord {
 struct SessionContext {
     microphone: String,
     interaction_mode: String,
-    auto_insert: bool,
 }
 
 #[derive(Serialize)]
@@ -150,7 +149,6 @@ impl DiagnosticSession {
                     config.microphone.clone()
                 },
                 interaction_mode: format!("{:?}", config.interaction_mode).to_lowercase(),
-                auto_insert: config.auto_insert,
             },
             audio: AudioRecord {
                 file: AUDIO_FILE_NAME,

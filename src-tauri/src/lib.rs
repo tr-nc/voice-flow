@@ -65,7 +65,6 @@ fn save_config(
         mode = ?config.interaction_mode,
         microphone = if config.microphone.is_empty() { "system-default" } else { &config.microphone },
         has_secret_key = !config.secret_key.is_empty(),
-        auto_insert = config.auto_insert,
         "configuration saved"
     );
     Ok(config)
