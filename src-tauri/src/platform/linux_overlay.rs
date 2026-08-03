@@ -265,7 +265,7 @@ pub fn run_helper() -> Result<()> {
     window.set_opacity(0.0);
     window.show_all();
     if let Some(gdk_window) = window.window() {
-        gdk_window.set_pass_through(true);
+        make_window_click_through(&gdk_window);
     }
 
     glib::timeout_add_local(Duration::from_millis(16), move || {
@@ -335,7 +335,7 @@ pub fn run_helper() -> Result<()> {
                                     height,
                                 );
                             }
-                            gdk_window.set_pass_through(true);
+                            make_window_click_through(&gdk_window);
                             gdk_window.raise();
                             window.set_opacity(1.0);
                             if let Some(placement) = placement {
@@ -363,6 +363,16 @@ pub fn run_helper() -> Result<()> {
     report_monitor_layout(&display);
     gtk::main();
     Ok(())
+}
+
+fn make_window_click_through(window: &gdk::Window) {
+    window.set_pass_through(true);
+
+    // GDK's pass-through flag only affects its own event routing. This helper
+    // owns a native top-level X11 window, so also clear the server-side input
+    // shape to let clicks reach windows in other processes below it.
+    let empty_input_region = gdk::cairo::Region::create();
+    window.input_shape_combine_region(&empty_input_region, 0, 0);
 }
 
 #[derive(Clone, Copy)]
