@@ -6,7 +6,7 @@ use std::time::Duration;
 use anyhow::{Context, Result, bail};
 use arboard::Clipboard;
 use objc2_app_kit::NSPasteboard;
-use objc2_application_services::{AXError, AXUIElement, AXValue, AXValueType};
+use objc2_application_services::{AXError, AXIsProcessTrusted, AXUIElement, AXValue, AXValueType};
 use objc2_core_foundation::{CFRetained, CFString, CFType, CGPoint, CGSize, ConcreteType};
 
 use super::{
@@ -20,6 +20,12 @@ const CLIPBOARD_RESTORE_DELAY: Duration = Duration::from_millis(120);
 pub struct MacOsTextInjector;
 
 pub fn initialize_settings_window(_window: &tauri::WebviewWindow) {}
+
+pub fn accessibility_is_trusted() -> bool {
+    // SAFETY: This reads the current process's Accessibility trust state and
+    // does not request permission or retain any system-owned objects.
+    unsafe { AXIsProcessTrusted() }
+}
 
 pub fn focused_window_center() -> Option<(f64, f64)> {
     // SAFETY: The system-wide AX element is returned with a +1 retain count,

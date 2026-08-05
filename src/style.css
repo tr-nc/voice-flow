@@ -79,7 +79,7 @@ select:focus-visible {
 .panel {
   padding: 16px;
   border: 1px solid var(--line);
-  border-radius: 14px;
+  border-radius: 7px;
   background: #fffefa;
 }
 

@@ -36,12 +36,19 @@ case "$(uname -s)" in
     rm -rf "$installed_app"
     ditto "$source_app" "$installed_app"
 
-    # Tauri's unsigned local build contains only a linker-generated signature.
-    # Sign the complete bundle so macOS can associate Accessibility permission
-    # with the installed application instead of rejecting its executable.
+    # An ordinary ad-hoc signature identifies each build by its changing CDHash,
+    # so macOS treats every reinstall as a different Accessibility client. This
+    # explicit requirement gives current-user local builds one stable identity.
+    local_requirement='designated => identifier "dev.voiceflow.desktop"'
     printf 'Signing the macOS application for local use...\n'
-    codesign --force --deep --sign - --identifier dev.voiceflow.desktop "$installed_app"
+    codesign --force --deep --sign - --identifier dev.voiceflow.desktop \
+      --requirements "=$local_requirement" "$installed_app"
     codesign --verify --deep --strict "$installed_app"
+    actual_requirement=$(codesign -d -r- "$installed_app" 2>&1)
+    case "$actual_requirement" in
+      *"$local_requirement"*) ;;
+      *) fail "installed application does not have the stable local designated requirement" ;;
+    esac
 
     printf '\nInstalled Voice Flow at:\n  %s\n' "$installed_app"
     printf 'Launch it with:\n  open "%s"\n' "$installed_app"

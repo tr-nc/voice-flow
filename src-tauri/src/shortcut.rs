@@ -82,7 +82,7 @@ pub fn start_monitor(app: AppHandle, handler: fn(&AppHandle, ShortcutEvent)) -> 
     thread::Builder::new()
         .name("voice-flow-shortcut".to_owned())
         .spawn(move || {
-            let Some(device) = DeviceState::checked_new() else {
+            let Some(device) = checked_device_state() else {
                 error!("global shortcut monitor requires Accessibility permission; grant permission and restart Voice Flow");
                 return;
             };
@@ -108,6 +108,27 @@ pub fn start_monitor(app: AppHandle, handler: fn(&AppHandle, ShortcutEvent)) -> 
         })
         .context("failed to start the global shortcut monitor")?;
     Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn checked_device_state() -> Option<DeviceState> {
+    initialize_if_accessibility_is_trusted(
+        crate::platform::accessibility_is_trusted(),
+        DeviceState::checked_new,
+    )
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn checked_device_state() -> Option<DeviceState> {
+    DeviceState::checked_new()
+}
+
+#[cfg(target_os = "macos")]
+fn initialize_if_accessibility_is_trusted<T>(
+    is_trusted: bool,
+    initialize: impl FnOnce() -> Option<T>,
+) -> Option<T> {
+    if is_trusted { initialize() } else { None }
 }
 
 fn parse_key(value: &str) -> Result<Keycode> {
@@ -172,5 +193,18 @@ mod tests {
         let binding = ShortcutBinding::parse("ControlLeft+KeyC").unwrap();
         let pressed = HashSet::from([Keycode::LControl, Keycode::C]);
         assert!(binding.is_pressed(&pressed));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn untrusted_accessibility_does_not_run_prompting_initializer() {
+        let mut initialized = false;
+        let device = initialize_if_accessibility_is_trusted(false, || {
+            initialized = true;
+            Some(())
+        });
+
+        assert_eq!(device, None);
+        assert!(!initialized);
     }
 }

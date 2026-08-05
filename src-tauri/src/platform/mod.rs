@@ -179,6 +179,11 @@ pub fn initialize_settings_window(window: &tauri::WebviewWindow) {
     unsupported::initialize_settings_window(window);
 }
 
+#[cfg(target_os = "macos")]
+pub fn accessibility_is_trusted() -> bool {
+    macos::accessibility_is_trusted()
+}
+
 pub fn activate_external_dictation_overlay() -> bool {
     #[cfg(target_os = "linux")]
     return linux::activate_external_dictation_overlay();
