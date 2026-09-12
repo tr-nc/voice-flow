@@ -57,6 +57,10 @@ npm run tauri dev
 
 The Linux default shortcut is right Control. Voice Flow temporarily publishes the transcript with `wl-copy` on Wayland or the X11 clipboard, emits virtual `Ctrl+Shift+V`, and restores the previous plain-text clipboard when it still owns the temporary value. If another application changes the clipboard during insertion, Voice Flow keeps the newer content instead of restoring over it. Normal insertion and restoration are silent; exceptional clipboard outcomes are reported in the floating overlay. Enter the Secret Key again on a new computer; local settings are intentionally not synchronized.
 
+Wayland publication is confirmed by a native clipboard reader, using data control when supported or the XWayland bridge on GNOME. It does not run `wl-paste`, whose temporary focus window can cancel an in-progress `wl-copy` publication. Reads run in a private helper with a bounded lifetime; clipboard text travels only through its stdout pipe, never the application log. Clipboard command timeouts and ownership errors remain distinct in diagnostics.
+
+For the live cursor-insertion regression check, build `cargo build --manifest-path src-tauri/Cargo.toml --example clipboard_probe`, then run `node scripts/check-linux-insertion.cjs 100`. This optional check requires Playwright with Chromium, Python 3 and `xprop`; see `--help`. It opens a disposable XWayland text field, emits real paste shortcuts, and checks exact text delivery plus clipboard restoration. It does not use ASR or send messages. Keep the test window active while it runs.
+
 ## Local install
 
 Voice Flow does not need a release package for personal use. From either macOS or Fedora, build and install the current checkout with:

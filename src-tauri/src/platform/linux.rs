@@ -1,6 +1,5 @@
-use std::io::Write;
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::sync::{Mutex, MutexGuard};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -13,8 +12,10 @@ use tracing::{debug, info, warn};
 
 use super::{
     ClipboardFinalization, ClipboardRestoreStatus, InsertionReport, TextInjector,
-    finish_clipboard_insertion, linux_overlay, linux_shell_overlay,
+    finish_clipboard_insertion, linux_clipboard, linux_overlay, linux_shell_overlay,
 };
+
+use super::linux_clipboard::ClipboardProcess;
 
 const CLIPBOARD_SETTLE_DELAY: Duration = Duration::from_millis(70);
 const WAYLAND_CLIPBOARD_PUBLISH_TIMEOUT: Duration = Duration::from_millis(500);
@@ -103,18 +104,21 @@ fn is_wayland_session() -> bool {
 fn insert_with_wayland_clipboard(text: &str) -> InsertionReport {
     // TODO: Preserve every advertised MIME type instead of only the plain-text
     // representation when the product expands beyond the first implementation.
-    let original = read_wayland_text();
+    let original = match read_wayland_text() {
+        Ok(original) => original,
+        Err(error) => return InsertionReport::failed_before_publish(format!("{error:#}")),
+    };
     let mut owner = match publish_wayland_text_foreground(text) {
         Ok(owner) => owner,
-        Err(error) => return InsertionReport::failed_before_publish(error.to_string()),
+        Err(error) => return InsertionReport::failed_before_publish(format!("{error:#}")),
     };
     if let Err(error) = wait_for_wayland_clipboard_publication(&mut owner, text) {
-        return finish_clipboard_insertion(Some(error.to_string()), |action| {
+        return finish_clipboard_insertion(Some(format!("{error:#}")), |action| {
             finalize_owned_wayland_clipboard(action, &mut owner, text, original)
         });
     }
 
-    let insertion_error = emit_virtual_paste().err().map(|error| error.to_string());
+    let insertion_error = emit_virtual_paste().err().map(|error| format!("{error:#}"));
     // Wayland paste is asynchronous: a successful uinput write only queues the
     // shortcut. Keep serving the temporary selection long enough for the
     // focused client to request every text representation it needs.
@@ -145,7 +149,7 @@ fn insert_with_x11_clipboard(text: &str) -> InsertionReport {
         ));
     }
     thread::sleep(CLIPBOARD_SETTLE_DELAY);
-    let insertion_error = emit_virtual_paste().err().map(|error| error.to_string());
+    let insertion_error = emit_virtual_paste().err().map(|error| format!("{error:#}"));
     thread::sleep(CLIPBOARD_RESTORE_DELAY);
 
     finish_clipboard_insertion(insertion_error, |action| match action {
@@ -157,38 +161,20 @@ fn insert_with_x11_clipboard(text: &str) -> InsertionReport {
     })
 }
 
-fn read_wayland_text() -> Option<String> {
-    let output = Command::new("wl-paste")
-        .arg("--no-newline")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    String::from_utf8(output.stdout).ok()
+fn read_wayland_text() -> Result<Option<String>> {
+    linux_clipboard::read_text()
 }
 
-fn publish_wayland_text_foreground(text: &str) -> Result<Child> {
-    let mut child = Command::new("wl-copy")
+fn publish_wayland_text_foreground(text: &str) -> Result<ClipboardProcess> {
+    let mut command = Command::new("wl-copy");
+    command
         .args(["--foreground", "--type", "text/plain;charset=utf-8"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .context("failed to start wl-copy; install the wl-clipboard package")?;
-
-    child
-        .stdin
-        .take()
-        .context("failed to open wl-copy stdin")?
-        .write_all(text.as_bytes())
-        .context("failed to send the transcript to wl-copy")?;
-    Ok(child)
+        .stdout(Stdio::null());
+    ClipboardProcess::spawn(command, Some(text))
+        .context("failed to publish the transcript with wl-copy")
 }
 
-fn wait_for_wayland_clipboard_publication(owner: &mut Child, text: &str) -> Result<()> {
+fn wait_for_wayland_clipboard_publication(owner: &mut ClipboardProcess, text: &str) -> Result<()> {
     let elapsed = wait_for_confirmed_clipboard_publication(
         WAYLAND_CLIPBOARD_PUBLISH_TIMEOUT,
         WAYLAND_CLIPBOARD_PUBLISH_POLL_DELAY,
@@ -203,15 +189,10 @@ fn wait_for_wayland_clipboard_publication(owner: &mut Child, text: &str) -> Resu
                 }
             }
 
-            Ok(read_wayland_text().as_deref() == Some(text))
+            Ok(read_wayland_text()?.as_deref() == Some(text))
         },
     )
-    .with_context(|| {
-        format!(
-            "Wayland clipboard did not publish the transcript within {} ms",
-            WAYLAND_CLIPBOARD_PUBLISH_TIMEOUT.as_millis()
-        )
-    })?;
+    .context("failed to confirm Wayland clipboard publication")?;
     debug!(
         elapsed_ms = elapsed.as_millis(),
         "Wayland clipboard publication confirmed"
@@ -230,42 +211,45 @@ fn wait_for_confirmed_clipboard_publication(
             return Ok(started.elapsed());
         }
         if started.elapsed() >= timeout {
-            bail!("clipboard publication was not confirmed before the deadline");
+            bail!(
+                "clipboard publication was not confirmed within {} ms",
+                timeout.as_millis()
+            );
         }
         thread::sleep(poll_delay);
     }
 }
 
 fn publish_wayland_text(text: &str) -> Result<()> {
-    let mut child = Command::new("wl-copy")
+    let mut command = Command::new("wl-copy");
+    command
         .args(["--type", "text/plain;charset=utf-8"])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        // The normal restore path lets wl-copy fork a persistent owner. Never
-        // capture stderr here because the background owner inherits that pipe.
-        .stderr(Stdio::null())
-        .spawn()
+        .stdout(Stdio::null());
+    let mut child = ClipboardProcess::spawn(command, Some(text))
         .context("failed to start wl-copy while restoring the clipboard")?;
-    child
-        .stdin
-        .take()
-        .context("failed to open wl-copy stdin while restoring the clipboard")?
-        .write_all(text.as_bytes())
-        .context("failed to restore the original text to wl-copy")?;
-    let status = child.wait().context("failed to wait for wl-copy")?;
+    let status = child
+        .wait(WAYLAND_CLIPBOARD_PUBLISH_TIMEOUT)
+        .context("failed to publish persistent clipboard text")?;
     if !status.success() {
         bail!("wl-copy failed to restore the clipboard with status {status}");
     }
+    // wl-copy also exits successfully when GNOME cancels its source. Check
+    // actual content, using the focus-free reader, before reporting success.
+    wait_for_confirmed_clipboard_publication(
+        WAYLAND_CLIPBOARD_PUBLISH_TIMEOUT,
+        WAYLAND_CLIPBOARD_PUBLISH_POLL_DELAY,
+        || Ok(read_wayland_text()?.as_deref() == Some(text)),
+    )
+    .context("persistent Wayland clipboard publication was not confirmed")?;
     Ok(())
 }
 
 fn clear_wayland_clipboard() -> Result<()> {
-    let status = Command::new("wl-copy")
-        .arg("--clear")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
+    let mut command = Command::new("wl-copy");
+    command.arg("--clear").stdout(Stdio::null());
+    let mut child = ClipboardProcess::spawn(command, None)?;
+    let status = child
+        .wait(WAYLAND_CLIPBOARD_PUBLISH_TIMEOUT)
         .context("failed to clear the temporary Wayland clipboard")?;
     if !status.success() {
         bail!("wl-copy failed to clear the clipboard with status {status}");
@@ -273,26 +257,18 @@ fn clear_wayland_clipboard() -> Result<()> {
     Ok(())
 }
 
-fn stop_clipboard_owner(owner: &mut Child) -> Result<()> {
-    if owner.try_wait()?.is_none() {
-        owner
-            .kill()
-            .context("failed to stop the temporary Wayland clipboard owner")?;
-    }
-    owner
-        .wait()
-        .context("failed to reap the temporary Wayland clipboard owner")?;
-    Ok(())
+fn stop_clipboard_owner(owner: &mut ClipboardProcess) -> Result<()> {
+    owner.stop()
 }
 
 fn restore_owned_wayland_clipboard(
-    owner: &mut Child,
+    owner: &mut ClipboardProcess,
     original: Option<String>,
 ) -> ClipboardRestoreStatus {
     match owner.try_wait() {
         Ok(None) => match stop_clipboard_owner(owner) {
             Ok(()) => restore_wayland_text(original),
-            Err(error) => ClipboardRestoreStatus::Failed(error.to_string()),
+            Err(error) => ClipboardRestoreStatus::Failed(format!("{error:#}")),
         },
         Ok(Some(_)) => ClipboardRestoreStatus::SkippedExternalChange,
         Err(error) => ClipboardRestoreStatus::Failed(format!(
@@ -303,7 +279,7 @@ fn restore_owned_wayland_clipboard(
 
 fn finalize_owned_wayland_clipboard(
     action: ClipboardFinalization,
-    owner: &mut Child,
+    owner: &mut ClipboardProcess,
     transcript: &str,
     original: Option<String>,
 ) -> ClipboardRestoreStatus {
@@ -313,14 +289,17 @@ fn finalize_owned_wayland_clipboard(
     }
 }
 
-fn keep_owned_wayland_transcript(owner: &mut Child, transcript: &str) -> ClipboardRestoreStatus {
+fn keep_owned_wayland_transcript(
+    owner: &mut ClipboardProcess,
+    transcript: &str,
+) -> ClipboardRestoreStatus {
     let publish_result = publish_wayland_text(transcript);
     if let Err(error) = stop_clipboard_owner(owner) {
         warn!(%error, "failed to reap the temporary Wayland clipboard owner");
     }
     match publish_result {
         Ok(()) => ClipboardRestoreStatus::TranscriptCopied,
-        Err(error) => ClipboardRestoreStatus::Failed(error.to_string()),
+        Err(error) => ClipboardRestoreStatus::Failed(format!("{error:#}")),
     }
 }
 
@@ -332,7 +311,7 @@ fn restore_wayland_text(original: Option<String>) -> ClipboardRestoreStatus {
     match result {
         Ok(()) if restored => ClipboardRestoreStatus::Restored,
         Ok(()) => ClipboardRestoreStatus::OriginalUnavailable,
-        Err(error) => ClipboardRestoreStatus::Failed(error.to_string()),
+        Err(error) => ClipboardRestoreStatus::Failed(format!("{error:#}")),
     }
 }
 
@@ -347,14 +326,14 @@ fn restore_arboard_text(
     match result {
         Ok(()) if restored => ClipboardRestoreStatus::Restored,
         Ok(()) => ClipboardRestoreStatus::OriginalUnavailable,
-        Err(error) => ClipboardRestoreStatus::Failed(error.to_string()),
+        Err(error) => ClipboardRestoreStatus::Failed(format!("{error:#}")),
     }
 }
 
 fn keep_arboard_transcript(clipboard: &mut Clipboard, transcript: &str) -> ClipboardRestoreStatus {
     match clipboard.set_text(transcript.to_owned()) {
         Ok(()) => ClipboardRestoreStatus::TranscriptCopied,
-        Err(error) => ClipboardRestoreStatus::Failed(error.to_string()),
+        Err(error) => ClipboardRestoreStatus::Failed(format!("{error:#}")),
     }
 }
 
@@ -543,6 +522,6 @@ mod tests {
             wait_for_confirmed_clipboard_publication(Duration::ZERO, Duration::ZERO, || Ok(false))
                 .expect_err("a running owner alone must not count as publication");
 
-        assert!(error.to_string().contains("publication was not confirmed"));
+        assert!(format!("{error:#}").contains("publication was not confirmed"));
     }
 }

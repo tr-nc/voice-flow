@@ -146,6 +146,8 @@ use macos::MacOsTextInjector as CurrentTextInjector;
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]
+mod linux_clipboard;
+#[cfg(target_os = "linux")]
 mod linux_overlay;
 #[cfg(target_os = "linux")]
 mod linux_shell_overlay;
@@ -218,6 +220,11 @@ pub fn hide_external_dictation_overlay() {
 #[cfg(target_os = "linux")]
 pub fn run_overlay_helper() -> Result<()> {
     linux_overlay::run_helper()
+}
+
+#[cfg(target_os = "linux")]
+pub fn run_clipboard_read_helper() -> Result<()> {
+    linux_clipboard::run_read_helper()
 }
 
 pub fn insert_at_active_cursor(text: &str) -> InsertionReport {
