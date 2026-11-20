@@ -76,6 +76,8 @@ The command runs a release build and installs only for the current user:
 
 Run the same command after pulling or making changes to replace the installed build. Settings and credentials remain in the platform config directory and are not touched. If Voice Flow is already running, restart it after installation.
 
+For silent Linux login startup, add `--background` to the Voice Flow command in your startup entry. The installer updates an existing `~/.config/autostart/voice-flow.desktop` symlink to the application-menu entry, but does not enable autostart on its own. Open Voice Flow from the application menu to show Settings when it is running in the background.
+
 The installer deliberately does not use `sudo` or change operating-system policy. Complete the Linux dependency, `input` group, and `uinput` setup above once. To load `uinput` automatically after future Fedora reboots, run:
 
 ```bash

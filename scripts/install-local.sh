@@ -81,20 +81,34 @@ case "$(uname -s)" in
     install -d "$(dirname -- "$desktop_file")"
 
     desktop_tmp=$(mktemp "${TMPDIR:-/tmp}/voice-flow.desktop.XXXXXX")
-    trap 'rm -f "$desktop_tmp"' EXIT HUP INT TERM
-    {
+    autostart_tmp=
+    trap 'rm -f "$desktop_tmp"; if [ -n "$autostart_tmp" ]; then rm -f "$autostart_tmp"; fi' EXIT HUP INT TERM
+    write_desktop_entry() {
       printf '%s\n' '[Desktop Entry]'
       printf '%s\n' 'Type=Application'
       printf '%s\n' 'Name=Voice Flow'
       printf '%s\n' 'Comment=Real-time voice input at the active cursor'
-      printf 'Exec="%s"\n' "$installed_binary"
+      printf 'Exec="%s"%s\n' "$installed_binary" "$1"
       printf 'TryExec=%s\n' "$installed_binary"
       printf '%s\n' 'Icon=dev.voiceflow.desktop'
       printf '%s\n' 'Terminal=false'
       printf '%s\n' 'Categories=Utility;'
-      printf '%s\n' 'StartupNotify=true'
-    } >"$desktop_tmp"
+      printf 'StartupNotify=%s\n' "$2"
+    }
+    write_desktop_entry '' true >"$desktop_tmp"
     install -m 0644 "$desktop_tmp" "$desktop_file"
+
+    # Split an existing opt-in autostart symlink from the application-menu
+    # launcher. Leave absent entries and custom desktop files alone.
+    autostart_file="${XDG_CONFIG_HOME:-$HOME/.config}/autostart/voice-flow.desktop"
+    if [ -L "$autostart_file" ] && [ "$autostart_file" -ef "$desktop_file" ]; then
+      autostart_tmp=$(mktemp "$(dirname -- "$autostart_file")/voice-flow.desktop.XXXXXX")
+      write_desktop_entry ' --background' false >"$autostart_tmp"
+      chmod 0644 "$autostart_tmp"
+      mv -fT "$autostart_tmp" "$autostart_file"
+      autostart_tmp=
+      printf 'Updated Voice Flow to start in the background at login.\n'
+    fi
     rm -f "$desktop_tmp"
     trap - EXIT HUP INT TERM
 

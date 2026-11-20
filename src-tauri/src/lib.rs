@@ -126,15 +126,19 @@ fn handle_shortcut(app: &AppHandle, shortcut_event: shortcut::ShortcutEvent) {
     }
 }
 
+const BACKGROUND_ARG: &str = "--background";
+
 fn show_settings(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("main") {
         let _ = window.unminimize();
         let _ = window.show();
         let _ = window.set_focus();
+    } else if let Err(error) = create_settings_window(app, true) {
+        error!(%error, "could not open settings");
     }
 }
 
-fn setup_settings_window(app: &mut tauri::App) -> tauri::Result<()> {
+fn create_settings_window(app: &AppHandle, visible: bool) -> tauri::Result<()> {
     let mut config = app
         .config()
         .app
@@ -144,12 +148,10 @@ fn setup_settings_window(app: &mut tauri::App) -> tauri::Result<()> {
         .cloned()
         .ok_or(tauri::Error::WindowNotFound)?;
 
-    // tao 0.35 does not correctly initialize Wayland window controls when a
-    // window is created hidden and shown later. Create the Linux settings
-    // window visible from the start while preserving the macOS background-app
-    // behavior.
-    config.visible = !cfg!(target_os = "macos");
-    let window = tauri::WebviewWindowBuilder::from_config(app.handle(), &config)?.build()?;
+    // On Wayland, tao 0.35 needs the settings window to be visible when
+    // created to initialize its native window controls correctly.
+    config.visible = visible;
+    let window = tauri::WebviewWindowBuilder::from_config(app, &config)?.build()?;
     platform::initialize_settings_window(&window);
     Ok(())
 }
@@ -183,13 +185,20 @@ fn setup_status_item(app: &mut tauri::App) -> tauri::Result<()> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let background = std::env::args_os().skip(1).any(|arg| arg == BACKGROUND_ARG);
     let graphics_workaround = platform::prepare_runtime();
     tauri::Builder::default()
         // Keep this as the first plugin so a second launch exits before it can
         // start another microphone capture and global shortcut monitor.
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            if args.iter().skip(1).any(|arg| arg == BACKGROUND_ARG) {
+                return;
+            }
             info!("additional Voice Flow launch redirected to the running instance");
-            show_settings(app);
+            let handle = app.clone();
+            if let Err(error) = app.run_on_main_thread(move || show_settings(&handle)) {
+                error!(%error, "could not schedule opening settings");
+            }
         }))
         .manage(AppState::default())
         .on_window_event(|_window, _event| {
@@ -209,7 +218,9 @@ pub fn run() {
             if let Some(workaround) = graphics_workaround {
                 info!(workaround, "applied Linux WebKitGTK graphics workaround");
             }
-            setup_settings_window(app)?;
+            if !background {
+                create_settings_window(app.handle(), !cfg!(target_os = "macos"))?;
+            }
             asr::install_tls_provider()?;
             let config = config::load(app.handle())?;
             info!(
